@@ -1,0 +1,17 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+data/raw/
+data/processed/
+data/outputs/
+models/*.pkl
+models/*.json
+.env
+*.egg-info/
+dist/
+build/
+.vscode/
+.idea/
+*.log

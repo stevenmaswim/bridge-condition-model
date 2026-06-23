@@ -1,0 +1,67 @@
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  output_dir: data/outputs
+  raw_file: bridge_data.csv
+
+targets:
+  - deck_cond_rating
+  - superstructure_cond_rating
+  - substructure_cond_rating
+  - culvert_cond_rating
+
+grouping:
+  district_col: txdot_district
+  climate_zone_col: climate_zone
+
+features:
+  numeric:
+    - structure_length
+    - max_span_length
+    - deck_width
+    - roadway_width
+    - adt
+    - adt_year
+    - year_built
+    - year_reconstructed
+    - skew_angle
+    - num_spans_main
+    - num_spans_approach
+    - deck_area
+    - bridge_age
+  categorical:
+    - owner
+    - maintenance_resp
+    - structure_kind
+    - structure_type
+    - deck_type
+    - wearing_surface
+    - membrane_type
+    - deck_protection
+    - design_load
+    - approach_roadway_width
+    - txdot_district
+    - climate_zone
+    - functional_class
+    - facility_carried
+    - features_intersected
+
+model:
+  type: xgboost
+  params:
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 3
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+    random_state: 42
+  test_size: 0.2
+
+output:
+  model_dir: models
+  predictions_file: data/outputs/predictions.csv
+  metrics_file: data/outputs/metrics.csv
+  feature_importance_file: data/outputs/feature_importance.csv
