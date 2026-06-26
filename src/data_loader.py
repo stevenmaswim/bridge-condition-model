@@ -4,11 +4,15 @@ import yaml
 
 
 def load_config(config_path="config.yaml"):
+    """Loads the configuration from a YAML file."""
+    
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
 def load_raw_data(config):
+    """Loads the raw data from the specified file path in the configuration file into pandas."""
+    
     filepath = os.path.join(config["data"]["raw_dir"], config["data"]["raw_file"])
     if filepath.endswith(".xlsx"):
         df = pd.read_excel(filepath, engine="openpyxl")
@@ -19,6 +23,8 @@ def load_raw_data(config):
 
 
 def clean_data(df, config):
+    """Cleans data in accordance with the configuration file because the configuration determines which data is important"""
+    
     targets = config["targets"]
     numeric_feats = config["features"]["numeric"]
     categorical_feats = config["features"]["categorical"]
@@ -41,6 +47,8 @@ def clean_data(df, config):
 
 
 def save_processed(df, config):
+    """Saves the processed data to a CSV file in the specified directory."""
+
     os.makedirs(config["data"]["processed_dir"], exist_ok=True)
     out_path = os.path.join(config["data"]["processed_dir"], "cleaned.csv")
     df.to_csv(out_path, index=False)

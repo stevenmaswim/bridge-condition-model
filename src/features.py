@@ -4,6 +4,7 @@ from datetime import datetime
 
 
 def engineer_features(df, config):
+    """Engineers the new column based upon the existing columns in the dataframe, in this case it is age, deck size, traffic density, and years since reconstruction."""
     if "year_built" in df.columns:
         current_year = datetime.now().year
         df["bridge_age"] = current_year - df["year_built"]
@@ -27,6 +28,7 @@ def engineer_features(df, config):
 
 
 def encode_categoricals(df, config):
+    """Scans through the dataframe and only includes features specified in the configuration file, and encodes categorical features as numeric codes."""
     categorical_feats = config["features"]["categorical"]
     for col in categorical_feats:
         if col in df.columns:
@@ -36,6 +38,7 @@ def encode_categoricals(df, config):
 
 
 def get_feature_columns(df, config):
+    """Returns a list of feature columns based on the configuration file, excluding target and grouping columns."""
     targets = config["targets"]
     group_cols = [
         config["grouping"]["district_col"],
@@ -47,6 +50,7 @@ def get_feature_columns(df, config):
 
 
 def prepare_model_data(df, config):
+    """Prepares the dataframe for modeling by engineering features, encoding categorical variables, and selecting feature columns based on the configuration."""
     df = engineer_features(df, config)
     df = encode_categoricals(df, config)
     feature_cols = get_feature_columns(df, config)
