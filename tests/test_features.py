@@ -53,3 +53,34 @@ def test_get_feature_columns_excludes_targets():
     feature_cols = get_feature_columns(df, config)
     for target in config["targets"]:
         assert target not in feature_cols
+
+
+def test_get_feature_columns_excludes_inspection_date():
+    config = load_config()
+    df = make_sample_df()
+    df["inspection_date"] = [5152010, 5152010, 5152010]  # numeric MMDDYYYY -- must NOT be a feature
+    df = engineer_features(df, config)
+    df = encode_categoricals(df, config)
+    assert config["data"]["inspection_date_col"] not in get_feature_columns(df, config)
+
+
+def test_engineer_features_uses_inspection_year_for_age():
+    # age must be measured from the INSPECTION year, not today's date
+    config = load_config()
+    df = make_sample_df()
+    df["inspection_date"] = [5152010, 5152010, 5152010]  # -> 2010
+    result = engineer_features(df, config)
+    assert result["bridge_age"].iloc[0] == 2010 - 1990  # 20
+    assert result["bridge_age"].iloc[2] == 2010 - 1970  # 40
+
+
+def test_engineer_features_bounds_garbage_year_built():
+    config = load_config()
+    df = make_sample_df()
+    df["year_built"] = [110, 9650, 1970]  # garbage, garbage, valid
+    df["inspection_date"] = [5152010, 5152010, 5152010]
+    result = engineer_features(df, config)
+    assert pd.isna(result["year_built"].iloc[0])       # 110  -> out of [1900, insp_year] -> NaN
+    assert pd.isna(result["year_built"].iloc[1])       # 9650 -> NaN
+    assert pd.isna(result["bridge_age"].iloc[0])       # NaN year_built -> NaN age
+    assert result["bridge_age"].iloc[2] == 2010 - 1970

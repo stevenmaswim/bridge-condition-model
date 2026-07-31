@@ -3,27 +3,35 @@ import pandas as pd
 import numpy as np
 
 
-def predict_all_targets(df, feature_cols, trained_models):
+def predict_all_targets(df, feature_cols, trained_models, linear_impute_values=None):
     predictions = df.copy()
-    for target, model in trained_models.items():
-        X = df[feature_cols].fillna(-999)
-        pred_col = f"{target}_predicted"
-        predictions[pred_col] = model.predict(X)
-        predictions[pred_col] = predictions[pred_col].clip(0, 9).round(1)
+    for target, models_by_type in trained_models.items():
+        for model_type, model in models_by_type.items():
+            if model_type == "linear_regression":
+                X = df[feature_cols].fillna(linear_impute_values or {})
+            else:
+                X = df[feature_cols]  # native NaN handling for XGBoost (matches training)
+            pred_col = f"{target}_{model_type}_predicted"
+            predictions[pred_col] = model.predict(X)
+            predictions[pred_col] = predictions[pred_col].clip(0, 9).round(1)
     return predictions
 
 
 def summarize_by_group(predictions, config, trained_models):
-    group_cols = [
-        config["grouping"]["district_col"],
-        config["grouping"]["climate_zone_col"],
-    ]
-    available_groups = [c for c in group_cols if c in predictions.columns]
+    # climate_zone is not yet populated in the real data (NULL from the SQL extract), so grouping
+    # falls back to district only. Use .get so a missing grouping key doesn't KeyError.
+    grouping = config.get("grouping", {})
+    group_cols = [grouping.get("district_col"), grouping.get("climate_zone_col")]
+    available_groups = [c for c in group_cols if c and c in predictions.columns]
     if not available_groups:
         print("Warning: no grouping columns found, skipping grouped summary")
         return pd.DataFrame()
 
-    pred_cols = [f"{t}_predicted" for t in trained_models.keys()]
+    pred_cols = [
+        f"{target}_{model_type}_predicted"
+        for target, models_by_type in trained_models.items()
+        for model_type in models_by_type
+    ]
     actual_cols = [t for t in trained_models.keys() if t in predictions.columns]
     agg_cols = pred_cols + actual_cols
 

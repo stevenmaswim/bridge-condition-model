@@ -2,7 +2,92 @@ data:
   raw_dir: data/raw
   processed_dir: data/processed
   output_dir: data/outputs
-  raw_file: bridge_data.csv
+  raw_file: REAL_ML_LEARNING_DATA.csv
+  # Tracked lookup key, not a model feature -- preserved through cleaning so a specific
+  # bridge can be looked up by NBI code (used by predict_future.py). Forced to load as a
+  # string in load_raw_data() so leading zeros in the code aren't lost to int parsing.
+  id_col: bridge_id
+  # Real per-inspection date (SNBI B.IE.02), stored in the raw export as an integer MMDDYYYY
+  # (e.g. 3211991 -> 03/21/1991). Preserved through cleaning and parsed by src/deterioration.py;
+  # it drives the deterioration model (collapses carried-forward annual snapshots into real
+  # inspection events). Distinct from the annual "DATE TIMESTAMP" submission date.
+  inspection_date_col: inspection_date
+  # On-/off-system flag (state-maintained vs locally owned). Preserved through cleaning so the
+  # watch-list can scope to the on-system bridges TxDOT is responsible for.
+  system_col: on_system
+  # Maps this export's verbose AssetWise/SNBI column headers to the model's snake_case
+  # names. Columns not listed here are left with their original header untouched.
+  column_rename_map:
+    "B.ID.01: BRG NUM": bridge_id
+    "B.IE.02: INSPEC BEGIN DATE (RT)": inspection_date
+    "ON/OFF": on_system
+    "B.L.04: HWY AGENCY DIST": txdot_district
+    "FEATURE CROSSED": features_intersected
+    "FACILITY CARRIED": facility_carried
+    "B.L.05: LATITUDE": latitude
+    "B.L.06: LONGITUDE": longitude
+    "B.CL.02: MAINT RESP": maintenance_resp
+    "B.CL.01: OWNER": owner
+    "B.H.01: FUNC CLASSIFICATION (1)": functional_class
+    "B.W.01: YEAR BUILT": year_built
+    "B.H.09: ANNUAL AVG DAILY TRAFFIC (1)": adt
+    "B.H.11: YR OF ANNUAL AVG DAILY TRAFFIC (1)": adt_year
+    "B.LR.01: DES LOAD": design_load
+    "B.G.09: APPROACH RDWY WIDTH": approach_roadway_width
+    "B.G.11: SKEW": skew_angle
+    "B.G.03: MAX SPAN LENGTH": max_span_length
+    "B.G.02: TOTAL BRIDGE LENGTH": structure_length
+    "B.G.06: BRIDGE WIDTH CURB-TO-CURB": roadway_width
+    "B.G.05: BRG WIDTH OUT-TO-OUT": deck_width
+    "B.C.01: DECK CONDITION RATING": deck_cond_rating
+    "B.C.02: SUPER CONDITION RATING": superstructure_cond_rating
+    "B.C.03: SUB CONDITION RATING": substructure_cond_rating
+    "B.C.04: CULVERT CONDITION RATING": culvert_cond_rating
+    "B.LR.06: OPR LOAD RTG FACTOR": operating_load_rating_factor
+    "B.LR.05: INVNTRY LOAD RTG FACTOR": inventory_load_rating_factor
+
+# Static per-bridge physical attributes joined from the AssetWise SNBI extract
+# (sql/bridge_data_extract.sql). These don't change between inspections, so the current value
+# back-fills a bridge's whole inspection history. See src/enrichment.py.
+# Deterioration model: predicts FUTURE rating from current rating + years ahead + attributes.
+# See src/deterioration.py. Feature lists default in-code (override with numeric:/categorical:).
+deterioration:
+  max_horizon: 25          # cap on forecast horizon (years) used when building training pairs
+  pair_cap: 1200000        # max forward pairs per target (sampled) to bound training time
+  # Below this horizon, "carry forward the last rating" beats the model (ratings barely move),
+  # so the forecast CLI uses carry-forward for near-term and the model for long-term.
+  hybrid_threshold_years: 3.0
+  # A second, lower-quantile "plan-for-this" forecast for budget planning. The point forecast
+  # under-flags rare fast decliners; the 25th percentile deliberately errs toward worse condition
+  # so a budget watch-list catches ~75% of 2-point drops (vs ~56%) at ~7% false alarms.
+  conservative_quantile: 0.25
+  # A calibrated risk model predicts P(future rating <= risk_threshold). It ranks budget priorities
+  # better than the point forecast (validated: AUC 0.93, top-1% precision 86% vs 81%) and gives a
+  # probability you can risk-weight a budget on.
+  risk_threshold: 5.0
+  watchlist:
+    horizon_years: 10
+    current_min: 5          # only screen bridges currently in fair-to-good shape...
+    current_max: 7          # ...(exclude already-poor -> inspect; exclude near-new -> normal aging)
+    poor_threshold: 5.0     # flag bridges whose conservative forecast reaches this or below
+    on_system_only: true    # scope to state-maintained (on-system) bridges; --all-system overrides
+
+enrichment:
+  extract_file: data/new_SQL_Querry_for_BRG_P_M.csv
+  has_header: false        # set true once the export includes the SQL's header row
+  static_numeric:
+    - num_spans_main
+    - num_beam_lines
+    - adt_truck
+  static_categorical:
+    - structure_kind
+    - structure_type
+    - span_continuity
+    - deck_type
+    - wearing_surface
+    - deck_protection
+    - scour_vulnerability
+    - load_posting_status
 
 targets:
   - deck_cond_rating
@@ -12,6 +97,8 @@ targets:
 
 grouping:
   district_col: txdot_district
+  # climate_zone is NOT yet populated (NULL from the SQL extract, pending a county/district -> zone
+  # lookup). Until then, grouped summaries fall back to district only (handled in predict.py).
   climate_zone_col: climate_zone
 
 features:
@@ -29,6 +116,11 @@ features:
     - num_spans_approach
     - deck_area
     - bridge_age
+    - latitude
+    - longitude
+    - inventory_load_rating_factor
+    - operating_load_rating_factor
+    - approach_roadway_width    # moved from categorical: it is a numeric width, not a category
   categorical:
     - owner
     - maintenance_resp
@@ -39,15 +131,18 @@ features:
     - membrane_type
     - deck_protection
     - design_load
-    - approach_roadway_width
     - txdot_district
     - climate_zone
     - functional_class
-    - facility_carried
-    - features_intersected
+    # facility_carried / features_intersected removed: as raw .cat.codes they are ~50k arbitrary
+    # integer categories (near-unique free text) that act as noise. Reintroduce only as engineered
+    # signal (e.g. a crosses_water boolean) if needed.
 
 model:
   type: xgboost
+  compare_types:
+    - xgboost
+    - linear_regression
   params:
     n_estimators: 300
     max_depth: 6
@@ -58,7 +153,29 @@ model:
     reg_alpha: 0.1
     reg_lambda: 1.0
     random_state: 42
-  test_size: 0.2
+  test_size: 0.3
+  split:
+    # "group" = leak-free split keyed on data.id_col (bridge_id) so no bridge is in both
+    #   train and test -- correct for this panel dataset (~20 inspections per bridge).
+    # "random" = legacy row-wise split (leaks bridges across the split, inflates metrics);
+    #   kept only to reproduce the old numbers for an honest before/after comparison.
+    method: group
+  tuning:
+    enabled: true
+    method: random
+    n_iter: 20
+    cv: 3
+    scoring: neg_mean_absolute_error
+    random_state: 42
+    param_grid:
+      n_estimators: [200, 300, 400, 500]
+      max_depth: [3, 4, 5, 6, 8]
+      learning_rate: [0.01, 0.05, 0.1, 0.2]
+      subsample: [0.6, 0.8, 1.0]
+      colsample_bytree: [0.6, 0.8, 1.0]
+      min_child_weight: [1, 3, 5]
+      reg_alpha: [0, 0.1, 0.5]
+      reg_lambda: [0.5, 1.0, 2.0]
 
 output:
   model_dir: models

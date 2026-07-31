@@ -15,3 +15,13 @@ build/
 .vscode/
 .idea/
 *.log
+
+# --- kept out of the (public) repo: data, model binaries, reports, tooling ---
+.claude/
+models/
+data/
+sme_review/
+forecast_ui.html
+*.pdf
+Bridge_Model_Status_Report_v2.md
+Data_Parameters_and_Testing_Report.md

@@ -3,10 +3,11 @@ import os
 import pandas as pd
 import numpy as np
 
-from src.data_loader import load_config, load_raw_data, clean_data, save_processed
+from src.data_loader import load_config, load_raw_data, rename_raw_columns, clean_data
 from src.features import prepare_model_data
-from src.model import train_all_targets, save_models, get_feature_importance
+from src.model import train_all_targets, save_models, get_feature_importance, compute_linear_impute_values
 from src.predict import predict_all_targets, summarize_by_group, save_predictions
+from src.deterioration import train_all_deterioration, save_deterioration_models
 
 
 def generate_sample_data(config, n_rows=200):
@@ -63,6 +64,24 @@ def generate_sample_data(config, n_rows=200):
     return pd.DataFrame(data)
 
 
+def redirect_outputs_for_dry_run(config):
+    """Returns a config copy whose model/output paths are redirected into a _dry_run
+    subfolder, so --dry-run can never overwrite real trained models or real predictions --
+    it previously wrote to the exact same paths as a real run, silently clobbering
+    production models with synthetic-data-trained ones."""
+
+    config = dict(config)
+    config["data"] = dict(config["data"])
+    config["output"] = dict(config["output"])
+
+    config["data"]["output_dir"] = os.path.join(config["data"]["output_dir"], "_dry_run")
+    config["output"]["model_dir"] = os.path.join(config["output"]["model_dir"], "_dry_run")
+    for key in ("predictions_file", "metrics_file", "feature_importance_file"):
+        directory, filename = os.path.split(config["output"][key])
+        config["output"][key] = os.path.join(directory, "_dry_run", filename)
+    return config
+
+
 def run_pipeline(config_path="config.yaml", dry_run=False):
     print("=" * 60)
     print("Bridge Condition Prediction Model - TxDOT")
@@ -73,18 +92,25 @@ def run_pipeline(config_path="config.yaml", dry_run=False):
     if dry_run:
         print("\n[DRY RUN] Using synthetic sample data")
         df = generate_sample_data(config)
+        config = redirect_outputs_for_dry_run(config)
     else:
         print("\n[1/5] Loading data...")
         df = load_raw_data(config)
 
+    df = rename_raw_columns(df, config)
+
     print("\n[2/5] Cleaning data...")
     df = clean_data(df, config)
+    # Keep the cleaned panel (raw categoricals + inspection date) for the deterioration model, which
+    # does its own feature prep -- it must not receive the encoded/enriched attributes-only frame.
+    df_clean = df.copy()
 
     print("\n[3/5] Engineering features...")
     df, feature_cols = prepare_model_data(df, config)
 
     print("\n[4/5] Training models...")
-    trained_models, metrics_df = train_all_targets(df, feature_cols, config)
+    linear_impute_values = compute_linear_impute_values(df, feature_cols)
+    trained_models, metrics_df = train_all_targets(df, feature_cols, config, linear_impute_values)
 
     if not trained_models:
         print("No models were trained. Check your data and config.")
@@ -93,19 +119,28 @@ def run_pipeline(config_path="config.yaml", dry_run=False):
     save_models(trained_models, config)
 
     print("\n[5/5] Generating predictions...")
-    predictions = predict_all_targets(df, feature_cols, trained_models)
+    predictions = predict_all_targets(df, feature_cols, trained_models, linear_impute_values)
     fi_df = get_feature_importance(trained_models, feature_cols)
     summary = summarize_by_group(predictions, config, trained_models)
     save_predictions(predictions, summary, metrics_df, fi_df, config)
 
+    # Deterioration model (primary forecasting model). Needs the real inspection date; the synthetic
+    # dry-run data has none, so this step is skipped there.
+    insp_col = config.get("data", {}).get("inspection_date_col")
+    if insp_col and insp_col in df_clean.columns and df_clean[insp_col].notna().any():
+        print("\n[+] Training deterioration (forecasting) models...")
+        det_models, _ = train_all_deterioration(df_clean, config)
+        if det_models:
+            save_deterioration_models(det_models, config)
+
     print("\n" + "=" * 60)
     print("Pipeline complete!")
-    print(f"  Models trained: {len(trained_models)}")
+    total_models = sum(len(v) for v in trained_models.values())
+    print(f"  Models trained: {total_models} ({len(trained_models)} targets x model types)")
     print(f"  Predictions: {len(predictions)} rows")
     if not metrics_df.empty:
-        avg_r2 = metrics_df["r2"].mean()
-        avg_mae = metrics_df["mae"].mean()
-        print(f"  Avg R2: {avg_r2:.3f}, Avg MAE: {avg_mae:.3f}")
+        for model_type, grp in metrics_df.groupby("model_type"):
+            print(f"  [{model_type}] Avg R2: {grp['r2'].mean():.3f}, Avg MAE: {grp['mae'].mean():.3f}")
     print("=" * 60)
 
 
