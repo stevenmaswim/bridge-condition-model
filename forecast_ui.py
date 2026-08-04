@@ -59,6 +59,14 @@ def build_data(config, codes=None, district=None):
     dist_col = config["grouping"]["district_col"]
     hybrid = (config.get("deterioration", {}) or {}).get("hybrid_threshold_years", 3.0)
 
+    # When reading live from Snowflake, push the district/bridge filter into the SQL so we only pull
+    # the rows we need (seconds) instead of the whole ~1.7M-row table. Harmless for the CSV source.
+    if config.get("data", {}).get("source") == "snowflake":
+        if codes:
+            config["_snowflake_filter"] = {"column": id_col, "values": [str(c).strip() for c in codes]}
+        elif district is not None:
+            config["_snowflake_filter"] = {"column": dist_col, "values": [str(district).strip()]}
+
     df = clean_data(rename_raw_columns(load_raw_data(config), config), config)
     events = build_inspection_events(df, config)
     latest = events.sort_values(insp_col).groupby(id_col, as_index=False).tail(1).copy()
@@ -115,111 +123,127 @@ HTML_TEMPLATE = r"""<!doctype html>
   header{padding:20px 24px;background:var(--card);border-bottom:1px solid var(--line)}
   h1{margin:0;font-size:20px}
   .sub{color:var(--muted);font-size:13px;margin-top:2px}
-  .wrap{padding:18px 24px;max-width:1100px;margin:0 auto}
-  .controls{display:flex;gap:14px;flex-wrap:wrap;align-items:end;margin-bottom:14px}
-  .controls label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
-  input,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
-  input[type=range]{padding:0}
+  .wrap{padding:18px 24px;max-width:820px;margin:0 auto}
+  .controls{display:flex;gap:18px;flex-wrap:wrap;align-items:end;margin-bottom:16px}
+  .controls label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:600}
+  select,input{font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:#fff}
+  select{min-width:240px}
+  input[type=range]{padding:0;width:220px}
   .yearval{font-weight:600;color:var(--accent)}
-  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
-  th{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;background:#fafafa;position:sticky;top:0}
-  tr:hover td{background:#f3f6fb;cursor:pointer}
-  .pill{display:inline-block;min-width:34px;text-align:center;padding:2px 8px;border-radius:999px;font-weight:600;color:#fff}
+  .prompt{background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--muted)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;display:none}
+  .card h2{margin:0 0 2px;font-size:19px}
+  .card .meta{color:var(--muted);font-size:13px;margin-bottom:14px}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+  th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .pill{display:inline-block;min-width:36px;text-align:center;padding:2px 9px;border-radius:999px;font-weight:700;color:#fff}
   .muted{color:var(--muted)}
-  .count{color:var(--muted);font-size:13px;margin:10px 2px}
-  .detail{margin-top:18px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;display:none}
-  .detail h3{margin:0 0 2px}
+  .chart{margin-top:16px}
   .legend{font-size:12px;color:var(--muted);margin-top:6px}
   .legend span{display:inline-flex;align-items:center;gap:5px;margin-right:14px}
   .sw{width:22px;height:0;border-top:3px solid var(--blue);display:inline-block}
   .sw.d{border-top-style:dashed}
-  footer{color:var(--muted);font-size:12px;padding:14px 24px}
+  footer{color:var(--muted);font-size:12px;padding:14px 24px;max-width:820px;margin:0 auto}
 </style></head>
 <body>
 <header>
   <h1>Bridge Condition Forecast</h1>
-  <div class="sub">Projected NBI condition ratings &middot; most-likely and conservative (plan-for) &middot; %%N%% bridges loaded</div>
+  <div class="sub">Select one bridge number to forecast its condition ratings &middot; %%N%% bridges available</div>
 </header>
 <div class="wrap">
   <div class="controls">
-    <div><label>Search NBI code</label><input id="q" placeholder="type a code..." style="width:220px"></div>
-    <div><label>Rating</label><select id="target"></select></div>
-    <div><label>Forecast horizon: <span class="yearval" id="yearlabel"></span></label>
-         <input type="range" id="horizon" min="0" max="20" step="1" value="10" style="width:220px"></div>
+    <div>
+      <label>Bridge number</label>
+      <input id="filter" placeholder="type to filter..." style="width:150px">
+      <select id="bridge"><option value="">-- select a bridge --</option></select>
+    </div>
+    <div>
+      <label>Forecast horizon: <span class="yearval" id="yearlabel">+10 years</span></label>
+      <input type="range" id="horizon" min="0" max="20" step="1" value="10">
+    </div>
   </div>
-  <div class="count" id="count"></div>
-  <table><thead><tr>
-    <th>NBI code</th><th>District</th><th>Year built</th><th>Last insp.</th><th>Forecast yr</th>
-    <th>Current</th><th>Most-likely</th><th>Plan-for (budget)</th><th>Risk of poor</th>
-  </tr></thead><tbody id="rows"></tbody></table>
 
-  <div class="detail" id="detail">
-    <h3 id="dtitle"></h3>
-    <div class="muted" id="dsub"></div>
-    <div id="chart"></div>
-    <div class="legend"><span><i class="sw"></i>most-likely</span><span><i class="sw d"></i>plan-for (conservative)</span>
-      <span>ratings: <b style="color:var(--good)">7-9 good</b> &middot; <b style="color:var(--fair)">5-6 fair</b> &middot; <b style="color:var(--poor)">0-4 poor</b></span></div>
+  <div class="prompt" id="prompt">Pick a bridge number above to see its forecast.</div>
+
+  <div class="card" id="card">
+    <h2 id="btitle"></h2>
+    <div class="meta" id="bmeta"></div>
+    <table>
+      <thead><tr><th>Rating</th><th>Current</th><th>Most-likely</th><th>Plan-for (budget)</th><th>Risk of poor</th></tr></thead>
+      <tbody id="brows"></tbody>
+    </table>
+    <div class="chart" id="chart"></div>
+    <div class="legend">
+      <span><i class="sw"></i>most-likely</span>
+      <span><i class="sw d"></i>plan-for (conservative)</span>
+      <span>ratings: <b style="color:var(--good)">7-9 good</b> &middot; <b style="color:var(--fair)">5-6 fair</b> &middot; <b style="color:var(--poor)">0-4 poor</b></span>
+    </div>
   </div>
 </div>
-<footer>Forecasts are decision-support for screening, not a substitute for inspection. The tool cannot foresee sudden failures and is weakest on already-poor bridges.</footer>
+<footer>Each bridge shows only the ratings it actually has (deck/superstructure/substructure OR culvert &mdash; never both). Decision-support for screening, not a substitute for inspection; weakest on already-poor bridges and cannot foresee sudden failures.</footer>
 <script>
 const DATA = %%DATA%%;
-const TARGETS = %%TARGETS%%;
 const HZ = %%HORIZONS%%;
 const NICE = {deck_cond_rating:"Deck",superstructure_cond_rating:"Superstructure",substructure_cond_rating:"Substructure",culvert_cond_rating:"Culvert"};
 const COLORS = ["#4E79A7","#F28E2B","#59A14F","#B07AA1"];
-const sel = document.getElementById('target');
-TARGETS.forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=NICE[t]||t;sel.appendChild(o);});
+const BY_ID = {}; DATA.forEach(b=>BY_ID[b.id]=b);
+const sel = document.getElementById('bridge');
+const ALL_IDS = DATA.map(b=>b.id).sort();
+function fillOptions(list){
+  sel.innerHTML = '<option value="">-- select a bridge --</option>' +
+    list.slice(0,5000).map(id=>`<option value="${id}">${id}</option>`).join("");
+}
+fillOptions(ALL_IDS);
 function ratingColor(v){if(v==null)return"#9ca3af";return v>=7?"#2f9e44":v>=5?"#f08c00":"#e03131";}
-function interp(map,h){ // map: {hz:val}; interpolate between known horizons
-  const ks=HZ; if(map[h]!=null)return map[h];
+function interp(map,h){const ks=HZ; if(map[h]!=null)return map[h];
   let lo=ks[0],hi=ks[ks.length-1];
   for(let i=0;i<ks.length-1;i++){if(ks[i]<=h&&h<=ks[i+1]){lo=ks[i];hi=ks[i+1];break;}}
   const a=map[lo],b=map[hi]; if(a==null||b==null)return a??b; if(hi===lo)return a;
-  return a+(b-a)*(h-lo)/(hi-lo);
-}
+  return a+(b-a)*(h-lo)/(hi-lo);}
 function pill(v){const s=v==null?"&mdash;":v.toFixed(1);return `<span class="pill" style="background:${ratingColor(v)}">${s}</span>`;}
-function riskCell(v){if(v==null)return '<span class="muted">&mdash;</span>';const c=v>=50?"#e03131":v>=25?"#f08c00":"#6b7280";return `<span style="font-weight:600;color:${c}">${Math.round(v)}%</span>`;}
+function riskCell(v){if(v==null)return '<span class="muted">&mdash;</span>';const c=v>=50?"#e03131":v>=25?"#f08c00":"#6b7280";return `<span style="font-weight:700;color:${c}">${Math.round(v)}%</span>`;}
 function render(){
-  const q=document.getElementById('q').value.trim().toLowerCase();
-  const t=sel.value; const h=+document.getElementById('horizon').value;
-  document.getElementById('yearlabel').textContent = "+"+h+" years (from each bridge's last inspection)";
-  let rows=DATA.filter(b=>b.id.toLowerCase().includes(q) && b.targets[t]);
-  // most at-risk first (budget priority); bridges with no risk value sort last
-  rows.sort((a,b)=>{const ra=interp(a.targets[t].risk,h), rb=interp(b.targets[t].risk,h);
-    return (rb==null?-1:rb)-(ra==null?-1:ra);});
-  document.getElementById('count').textContent = rows.length+" bridges"+(q?" matching \""+q+"\"":"")+" with a "+(NICE[t]||t)+" rating (most at-risk first)";
-  const tb=document.getElementById('rows'); tb.innerHTML="";
-  rows.slice(0,500).forEach(b=>{const d=b.targets[t];
+  const h=+document.getElementById('horizon').value;
+  document.getElementById('yearlabel').textContent = "+"+h+" years";
+  const b = BY_ID[sel.value];
+  document.getElementById('prompt').style.display = b ? "none" : "block";
+  document.getElementById('card').style.display = b ? "block" : "none";
+  if(!b) return;
+  document.getElementById('btitle').textContent = "Bridge "+b.id;
+  document.getElementById('bmeta').textContent =
+    (b.district?"District "+b.district+" · ":"") + (b.year_built?"built "+b.year_built+" · ":"") +
+    "last inspected "+b.last_year+" · forecast year "+(b.last_year+h);
+  // only the ratings this bridge actually has (deck/super/sub OR culvert)
+  const tb=document.getElementById('brows'); tb.innerHTML="";
+  Object.keys(b.targets).forEach(t=>{const d=b.targets[t];
     const like=interp(d.likely,h), cons=interp(d.cons,h), rk=interp(d.risk,h);
-    const tr=document.createElement('tr'); tr.onclick=()=>showDetail(b);
-    tr.innerHTML=`<td><b>${b.id}</b></td><td>${b.district||""}</td><td>${b.year_built||""}</td>
-      <td class=muted>${b.last_year}</td><td><b>${b.last_year+h}</b></td>
-      <td>${pill(d.current)}</td><td>${pill(like)}</td><td>${pill(cons)}</td><td>${riskCell(rk)}</td>`;
-    tb.appendChild(tr);});
-  if(rows.length>500){const tr=document.createElement('tr');tr.innerHTML=`<td colspan=9 class=muted>Showing first 500 of ${rows.length}. Narrow the search to see others.</td>`;tb.appendChild(tr);}
+    tb.innerHTML += `<tr><td><b>${NICE[t]||t}</b></td><td>${pill(d.current)}</td>`+
+      `<td>${pill(like)}</td><td>${pill(cons)}</td><td>${riskCell(rk)}</td></tr>`;});
+  drawChart(b);
 }
-function showDetail(b){
-  const d=document.getElementById('detail'); d.style.display="block";
-  document.getElementById('dtitle').textContent="Bridge "+b.id;
-  document.getElementById('dsub').textContent=(b.district?"District "+b.district+" · ":"")+(b.year_built?"built "+b.year_built+" · ":"")+"last inspected "+b.last_year;
-  // SVG deterioration curves
-  const W=640,H=240,pl=38,pr=14,pt=14,pb=28; const yrs=HZ;
+function drawChart(b){
+  const W=680,H=240,pl=38,pr=90,pt=14,pb=28, yrs=HZ;
   const x=h=>pl+(W-pl-pr)*(h/20); const y=v=>pt+(H-pt-pb)*(1-v/9);
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px">`;
   for(let g=0;g<=9;g+=3){svg+=`<line x1=${pl} y1=${y(g)} x2=${W-pr} y2=${y(g)} stroke="#eee"/><text x=4 y=${y(g)+4} font-size=11 fill="#9ca3af">${g}</text>`;}
   yrs.forEach(h=>{svg+=`<text x=${x(h)} y=${H-8} font-size=11 fill="#9ca3af" text-anchor="middle">+${h}</text>`;});
-  Object.keys(b.targets).forEach((t,idx)=>{const d2=b.targets[t];const c=COLORS[idx%COLORS.length];
-    const pL=yrs.map(h=>`${x(h)},${y(d2.likely[h])}`).join(" ");
-    const pC=yrs.map(h=>`${x(h)},${y(d2.cons[h])}`).join(" ");
+  Object.keys(b.targets).forEach((t,idx)=>{const d=b.targets[t];const c=COLORS[idx%COLORS.length];
+    const pL=yrs.map(h=>`${x(h)},${y(d.likely[h])}`).join(" ");
+    const pC=yrs.map(h=>`${x(h)},${y(d.cons[h])}`).join(" ");
     svg+=`<polyline points="${pC}" fill="none" stroke="${c}" stroke-width="2" stroke-dasharray="5 4" opacity=".7"/>`;
     svg+=`<polyline points="${pL}" fill="none" stroke="${c}" stroke-width="2.5"/>`;
-    svg+=`<text x=${W-pr} y=${y(d2.likely[20])-6} font-size=11 fill="${c}" text-anchor="end">${NICE[t]||t}</text>`;});
+    svg+=`<text x=${W-pr+6} y=${y(d.likely[20])+4} font-size="11" fill="${c}">${NICE[t]||t}</text>`;});
   svg+=`</svg>`;
   document.getElementById('chart').innerHTML=svg;
 }
-document.getElementById('q').oninput=render; sel.onchange=render; document.getElementById('horizon').oninput=render;
+document.getElementById('filter').oninput=function(){
+  const q=this.value.trim().toLowerCase();
+  fillOptions(q ? ALL_IDS.filter(id=>id.toLowerCase().includes(q)) : ALL_IDS);
+  render();
+};
+sel.onchange=render;
+document.getElementById('horizon').oninput=render;
 render();
 </script>
 </body></html>"""

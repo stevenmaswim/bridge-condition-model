@@ -3,6 +3,8 @@ data:
   processed_dir: data/processed
   output_dir: data/outputs
   raw_file: REAL_ML_LEARNING_DATA.csv
+  # Where to read data from: "csv" (the local file above) or "snowflake" (the block at the bottom).
+  source: snowflake
   # Tracked lookup key, not a model feature -- preserved through cleaning so a specific
   # bridge can be looked up by NBI code (used by predict_future.py). Forced to load as a
   # string in load_raw_data() so leading zeros in the code aren't lost to int parsing.
@@ -182,3 +184,56 @@ output:
   predictions_file: data/outputs/predictions.csv
   metrics_file: data/outputs/metrics.csv
   feature_importance_file: data/outputs/feature_importance.csv
+
+# ============================================================================
+# Snowflake (live data source). Only used when data.source == "snowflake".
+# CREDENTIALS DO NOT GO HERE -- set them as environment variables (or a .env file):
+#   SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD  (the repo is public).
+# The query should alias your Snowflake columns to the model's expected names
+# (bridge_id, deck_cond_rating, inspection_date, year_built, ...), the same way
+# sql/bridge_data_extract.sql does. Fill in your real database/schema/table below.
+# ============================================================================
+snowflake:
+  warehouse: WH_SMALL_GEN_BI
+  database: PRD_ADS_BRIDGE_INSP_HIST
+  schema: BAL_ADS_BRIDGE_INSP_HIST
+  role: Public
+  authenticator: externalbrowser   # TxDOT Microsoft SSO -- opens a browser to log in, no password
+  table: null                      # simple option: SELECT * FROM this table
+  # Maps TxDOT's legacy NBI item columns (e.g. "58 Deck Cond") to the model's snake_case names.
+  # This is the live equivalent of data.column_rename_map used for the CSV. Add a
+  # "LIMIT 100" at the end while testing to keep it fast; remove it for a full run.
+  query: |
+    SELECT
+      "0000_StructureID"  AS bridge_id,
+      "90 Last Inspec"    AS inspection_date,          -- integer MMDDYYYY (real per-inspection date)
+      "ON/OFF"            AS on_system,
+      "2 District"        AS txdot_district,
+      "58 Deck Cond"      AS deck_cond_rating,
+      "59 Super Cond"     AS superstructure_cond_rating,
+      "60 SubstrCond"     AS substructure_cond_rating,
+      "62 Culvert"        AS culvert_cond_rating,
+      "27 Yr Built"       AS year_built,
+      "106 Yr Reconstr"   AS year_reconstructed,
+      "29 AADT"           AS adt,
+      "30 AADT Year"      AS adt_year,
+      "49 Str Lgth"       AS structure_length,
+      "48 Max Sp Lgth"    AS max_span_length,
+      "52 Deck Width"     AS deck_width,
+      "51 Rdwy Width"     AS roadway_width,
+      "32 Appr Width"     AS approach_roadway_width,
+      "34 Skew"           AS skew_angle,
+      "45 1 No MSpan"     AS num_spans_main,
+      "45 2 No MjAprSp"   AS num_spans_approach,
+      "16 Latitude"       AS latitude,
+      "17 Longitude"      AS longitude,
+      "66 Inv Rate"       AS inventory_load_rating_factor,
+      "64 Oper Rate"      AS operating_load_rating_factor,
+      "22 Owner"          AS owner,
+      "21 Custodian"      AS maintenance_resp,
+      "26 Func Class"     AS functional_class,
+      "31 Design Load"    AS design_load,
+      "43 1 Mn Span Ty"   AS structure_type,
+      "107 1 Deck Ty MSp" AS deck_type,
+      "108 1 MSp WrSurf"  AS wearing_surface
+    FROM PRD_ADS_BRIDGE_INSP_HIST.BAL_ADS_BRIDGE_INSP_HIST.HIST_BRG_INSP_DATA

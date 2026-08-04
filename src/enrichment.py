@@ -89,6 +89,15 @@ def attach_static_features(df, config):
         return df, []
     id_col = config.get("data", {}).get("id_col", "bridge_id")
     feats = [c for c in lookup.columns if c != id_col]
+    # Don't re-add columns the panel already carries. The live Snowflake query already supplies
+    # num_spans_main/structure_type/deck_type/etc.; merging them again would collide and pandas would
+    # suffix both copies (_x/_y), breaking every downstream lookup by name. Keep the values on df.
+    overlap = [c for c in feats if c in df.columns]
+    if overlap:
+        lookup = lookup.drop(columns=overlap)
+        feats = [c for c in feats if c not in overlap]
+    if not feats:
+        return df, []
     merged = df.merge(lookup, on=id_col, how="left")
     matched = merged[feats[0]].notna().mean() * 100 if feats else 0.0
     print(f"  [enrichment] matched {matched:.1f}% of rows to the extract")

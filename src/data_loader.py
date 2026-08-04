@@ -11,17 +11,25 @@ def load_config(config_path="config.yaml"):
 
 
 def load_raw_data(config):
-    """Loads the raw data from the specified file path in the configuration file into pandas."""
-
-    filepath = os.path.join(config["data"]["raw_dir"], config["data"]["raw_file"])
-
-    # Force the ID column to load as a string, whatever its raw (pre-rename) header is --
-    # a numeric-looking bridge code (e.g. "010600013603019") would otherwise get parsed as
-    # an int and silently lose its leading zero.
+    """Loads the raw data into pandas. Reads a local CSV/xlsx by default, or live from Snowflake
+    when config.data.source == 'snowflake'."""
     id_col = config.get("data", {}).get("id_col")
     rename_map = config.get("data", {}).get("column_rename_map", {})
-    dtype_hint = {raw: str for raw, mapped in rename_map.items() if id_col and mapped == id_col}
+    # raw header(s) that map to the id column -- must load as string to keep leading zeros.
+    id_raw_cols = [raw for raw, mapped in rename_map.items() if id_col and mapped == id_col]
 
+    # --- live source: Snowflake ---
+    if config.get("data", {}).get("source", "csv") == "snowflake":
+        from src.snowflake_loader import load_from_snowflake
+        df = load_from_snowflake(config)
+        for col in id_raw_cols + ([id_col] if id_col else []):
+            if col in df.columns:
+                df[col] = df[col].astype(str)   # protect leading zeros in the bridge code
+        return df
+
+    # --- default source: local file ---
+    filepath = os.path.join(config["data"]["raw_dir"], config["data"]["raw_file"])
+    dtype_hint = {raw: str for raw in id_raw_cols}
     if filepath.endswith(".xlsx"):
         df = pd.read_excel(filepath, engine="openpyxl", dtype=dtype_hint or None)
     else:
