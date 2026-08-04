@@ -124,6 +124,15 @@ HTML_TEMPLATE = r"""<!doctype html>
   h1{margin:0;font-size:20px}
   .sub{color:var(--muted);font-size:13px;margin-top:2px}
   .wrap{padding:18px 24px;max-width:820px;margin:0 auto}
+  .intro{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);
+         border-radius:10px;padding:16px 20px;margin-bottom:18px;font-size:13.5px}
+  .intro b{color:var(--ink)}
+  .intro p{margin:0 0 10px}
+  .intro ol{margin:6px 0 10px 20px;padding:0}
+  .intro li{margin:2px 0}
+  .intro .cols{display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;margin-top:8px}
+  .intro .cols div{color:var(--muted)}
+  @media(max-width:640px){.intro .cols{grid-template-columns:1fr}}
   .controls{display:flex;gap:18px;flex-wrap:wrap;align-items:end;margin-bottom:16px}
   .controls label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:600}
   select,input{font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:#fff}
@@ -152,6 +161,24 @@ HTML_TEMPLATE = r"""<!doctype html>
   <div class="sub">Select one bridge number to forecast its condition ratings &middot; %%N%% bridges available</div>
 </header>
 <div class="wrap">
+  <div class="intro">
+    <p><b>What this is.</b> A screening tool that forecasts how a TxDOT bridge's NBI condition
+    ratings (0&ndash;9 scale) are likely to change over the next 20 years. Forecasts come from a
+    model trained on roughly 1.7&nbsp;million historical bridge inspections.</p>
+    <p><b>How to use it:</b></p>
+    <ol>
+      <li>Pick a <b>bridge number</b> from the dropdown (type in the filter box to find one).</li>
+      <li>Drag the <b>forecast horizon</b> slider to choose how many years ahead to look.</li>
+      <li>Read the table and the deterioration curve below.</li>
+    </ol>
+    <p style="margin-bottom:4px"><b>What the columns mean:</b></p>
+    <div class="cols">
+      <div><b>Current</b> &mdash; the most recent inspection rating.</div>
+      <div><b>Most-likely</b> &mdash; the model's best estimate for the future year.</div>
+      <div><b>Plan-for (budget)</b> &mdash; a deliberately cautious estimate for budgeting (leans toward worse).</div>
+      <div><b>Risk of poor</b> &mdash; the chance the rating falls to 5 or below.</div>
+    </div>
+  </div>
   <div class="controls">
     <div>
       <label>Bridge number</label>
