@@ -195,45 +195,70 @@ output:
 # ============================================================================
 snowflake:
   warehouse: WH_SMALL_GEN_BI
-  database: PRD_ADS_BRIDGE_INSP_HIST
-  schema: BAL_ADS_BRIDGE_INSP_HIST
+  database: PRD_BRIDGE_INSP
+  schema: BAL_BRIDGE_INSP
   role: Public
   authenticator: externalbrowser   # TxDOT Microsoft SSO -- opens a browser to log in, no password
   table: null                      # simple option: SELECT * FROM this table
-  # Maps TxDOT's legacy NBI item columns (e.g. "58 Deck Cond") to the model's snake_case names.
-  # This is the live equivalent of data.column_rename_map used for the CSV. Add a
-  # "LIMIT 100" at the end while testing to keep it fast; remove it for a full run.
+  # ---------------------------------------------------------------------------------------------
+  # Source: CORE_SNBI_DATA, joined to FEATURES to keep ONLY highway bridges.
+  #
+  # The join is the point of this query. FEATURES carries one row per feature a structure
+  # interacts with; B.F.01 = 'H01' is a highway feature and B.F.02 = 'C' is the feature the
+  # bridge CARRIES. Inner-joining on both restricts the pull to highway bridges on the highway
+  # they carry -- excluding pedestrian, rail and other structures we do not plan budget for.
+  # (The original hand-written query also had a redundant WHERE AS_ID IN (SELECT ... same two
+  # conditions); the inner join already enforces it, so it is dropped here.)
+  #
+  # A structure carrying more than one qualifying highway feature yields more than one row per
+  # inspection. That is harmless: build_inspection_events() de-duplicates on
+  # (bridge_id, inspection_date) before anything is trained or served.
+  #
+  # NOTE -- this table uses SNBI names ("B.C.01: DECK CONDITION RATING"), not the legacy NBI item
+  # names ("58 Deck Cond") of the previous source (PRD_ADS_BRIDGE_INSP_HIST.HIST_BRG_INSP_DATA).
+  # Every alias below is therefore rewritten. Aliases must stay snake_case and match the model's
+  # column names, because snowflake_loader lowercases whatever Snowflake returns and the
+  # data.column_rename_map is NOT applied to this path.
+  # ---------------------------------------------------------------------------------------------
   query: |
     SELECT
-      "0000_StructureID"  AS bridge_id,
-      "90 Last Inspec"    AS inspection_date,          -- integer MMDDYYYY (real per-inspection date)
-      "ON/OFF"            AS on_system,
-      "2 District"        AS txdot_district,
-      "58 Deck Cond"      AS deck_cond_rating,
-      "59 Super Cond"     AS superstructure_cond_rating,
-      "60 SubstrCond"     AS substructure_cond_rating,
-      "62 Culvert"        AS culvert_cond_rating,
-      "27 Yr Built"       AS year_built,
-      "106 Yr Reconstr"   AS year_reconstructed,
-      "29 AADT"           AS adt,
-      "30 AADT Year"      AS adt_year,
-      "49 Str Lgth"       AS structure_length,
-      "48 Max Sp Lgth"    AS max_span_length,
-      "52 Deck Width"     AS deck_width,
-      "51 Rdwy Width"     AS roadway_width,
-      "32 Appr Width"     AS approach_roadway_width,
-      "34 Skew"           AS skew_angle,
-      "45 1 No MSpan"     AS num_spans_main,
-      "45 2 No MjAprSp"   AS num_spans_approach,
-      "16 Latitude"       AS latitude,
-      "17 Longitude"      AS longitude,
-      "66 Inv Rate"       AS inventory_load_rating_factor,
-      "64 Oper Rate"      AS operating_load_rating_factor,
-      "22 Owner"          AS owner,
-      "21 Custodian"      AS maintenance_resp,
-      "26 Func Class"     AS functional_class,
-      "31 Design Load"    AS design_load,
-      "43 1 Mn Span Ty"   AS structure_type,
-      "107 1 Deck Ty MSp" AS deck_type,
-      "108 1 MSp WrSurf"  AS wearing_surface
-    FROM PRD_ADS_BRIDGE_INSP_HIST.BAL_ADS_BRIDGE_INSP_HIST.HIST_BRG_INSP_DATA
+      CR."B.ID.01: BRG NUM"                  AS bridge_id,
+      CR."B.IE.02: INSPEC BEGIN DATE (RT)"   AS inspection_date,   -- routine inspection, MMDDYYYY
+      CR."ON/OFF SYSTEM"                     AS on_system,
+      CR."B.L.04: HWY AGENCY DIST"           AS txdot_district,
+      CR."B.C.01: DECK CONDITION RATING"     AS deck_cond_rating,
+      CR."B.C.02: SUPER CONDITION RATING"    AS superstructure_cond_rating,
+      CR."B.C.03: SUB CONDITION RATING"      AS substructure_cond_rating,
+      CR."B.C.04: CULVERT CONDITION RATING"  AS culvert_cond_rating,
+      CR."B.W.01: YEAR BUILT"                AS year_built,
+      CR."B.G.02: TOTAL BRIDGE LENGTH"       AS structure_length,
+      CR."B.G.03: MAX SPAN LENGTH"           AS max_span_length,
+      CR."B.G.05: BRG WIDTH OUT-TO-OUT"      AS deck_width,
+      CR."B.G.06: BRIDGE WIDTH CURB-TO-CURB" AS roadway_width,
+      CR."B.G.09: APPROACH RDWY WIDTH"       AS approach_roadway_width,
+      CR."B.G.11: SKEW"                      AS skew_angle,
+      CR."B.L.05: LATITUDE"                  AS latitude,
+      CR."B.L.06: LONGITUDE"                 AS longitude,
+      CR."B.LR.01: DES LOAD"                 AS design_load,
+      CR."B.LR.05: INVNTRY LOAD RTG FACTOR"  AS inventory_load_rating_factor,
+      CR."B.LR.06: OPR LOAD RTG FACTOR"      AS operating_load_rating_factor,
+      CR."B.CL.01: OWNER"                    AS owner,
+      CR."B.CL.02: MAINT RESP"               AS maintenance_resp,
+      FEAT."B.H.01"                          AS functional_class,
+      FEAT."B.H.09"                          AS adt,
+      FEAT."B.H.11"                          AS adt_year
+      -- Available here but deliberately NOT selected yet. This source can supply three
+      -- attributes that today reach the model through the enrichment extract, which only
+      -- matches ~79% of bridges -- so switching them on is a real coverage win. It is held
+      -- back because the models in models/deterioration/ were trained with these columns
+      -- coming from the extract, and the category codes may not use the same vocabulary here;
+      -- a persisted encoder would silently bucket unseen codes. Enable these lines and RETRAIN
+      -- (python main.py) together, never separately:
+      -- , CR."LATEST_POSTING_STATUS"           AS load_posting_status
+      -- , CR."B.AP.03: SCOUR VULNERABILITY"    AS scour_vulnerability
+      -- , FEAT."B.H.10"                        AS adt_truck
+    FROM PRD_BRIDGE_INSP.BAL_BRIDGE_INSP.CORE_SNBI_DATA CR
+    JOIN PRD_BRIDGE_INSP.BAL_BRIDGE_INSP.FEATURES FEAT
+      ON  CR.AS_ID      = FEAT.AS_ID
+      AND FEAT."B.F.01" = 'H01'
+      AND FEAT."B.F.02" = 'C'
