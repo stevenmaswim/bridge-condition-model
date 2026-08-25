@@ -42,10 +42,31 @@ HORIZON_LABELS = ["~2y", "~5y", "~10y", "~20y"]
 
 
 def parse_inspection_date(series):
-    """SNBI B.IE.02 is an integer MMDDYYYY (e.g. 3211991 -> 1991-03-21), NOT a native date.
-    Zero-pad to 8 chars and parse explicitly; a naive to_datetime treats it as nanoseconds."""
-    s = series.astype(str).str.replace(r"\.0$", "", regex=True).str.strip().str.zfill(8)
-    return pd.to_datetime(s, format="%m%d%Y", errors="coerce")
+    """Parse an inspection date from whichever shape the source hands us.
+
+    The legacy inspection-history export stores SNBI B.IE.02 as an integer MMDDYYYY
+    (3211991 -> 1991-03-21), which a naive to_datetime would read as nanoseconds. Other
+    Snowflake tables (e.g. CORE_SNBI_DATA) return a native DATE or an ISO string instead.
+    Assuming one shape silently NaTs every row of the other -- and because a NaT date is
+    dropped rather than raised, that failure is invisible until the model has no training
+    pairs. So dispatch on what the values actually look like, per row.
+    """
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return pd.to_datetime(series, errors="coerce")
+
+    s = series.astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    out = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+
+    # all-digit values are the packed MMDDYYYY form
+    packed = s.str.fullmatch(r"\d{1,8}").fillna(False)
+    if packed.any():
+        out.loc[packed] = pd.to_datetime(s[packed].str.zfill(8), format="%m%d%Y", errors="coerce")
+
+    # anything else (2024-10-21, 10/21/2024, a real timestamp) goes through normal parsing
+    other = ~packed & ~s.isin(["", "nan", "NaN", "NaT", "None", "<NA>"])
+    if other.any():
+        out.loc[other] = pd.to_datetime(s[other], errors="coerce")
+    return out
 
 
 def build_inspection_events(df, config):

@@ -175,3 +175,22 @@ def test_build_watchlist_district_no_match_is_empty():
     wl = build_watchlist(df, _wl_config(), _models_with_conservative(),
                          target="deck_cond_rating", district="99")
     assert wl.empty
+
+def test_parse_inspection_date_accepts_native_dates_and_iso_strings():
+    """Regression: the parser used to assume integer MMDDYYYY and silently NaT'd every row of a
+    source that returns real dates. Because a NaT date is dropped rather than raised, that
+    failure was invisible until the model had no training pairs -- CORE_SNBI_DATA hit it with
+    0 of 6,865 rows parsed. Both shapes must work, including mixed."""
+    packed = parse_inspection_date(pd.Series([3211991, 10211991]))
+    assert list(packed.dt.strftime("%Y-%m-%d")) == ["1991-03-21", "1991-10-21"]
+
+    iso = parse_inspection_date(pd.Series(["2024-10-21", "2022-11-22"]))
+    assert list(iso.dt.strftime("%Y-%m-%d")) == ["2024-10-21", "2022-11-22"]
+
+    native = parse_inspection_date(pd.to_datetime(pd.Series(["2024-10-21"])))
+    assert native.iloc[0].strftime("%Y-%m-%d") == "2024-10-21"
+
+    mixed = parse_inspection_date(pd.Series([3211991, "2024-10-21", "", None, "junk"]))
+    assert mixed.notna().sum() == 2
+    assert mixed.iloc[0].strftime("%Y-%m-%d") == "1991-03-21"
+    assert mixed.iloc[1].strftime("%Y-%m-%d") == "2024-10-21"
