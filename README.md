@@ -22,6 +22,10 @@ held-out bridges the deterioration model lands within ±1 rating for ~90–96% o
 beats "assume no change," and beats a material-stratified Markov deterioration-curve model by
 ~13–17% at 20 yr.
 
+> **New to this project?** Read [START_HERE.md](START_HERE.md) first — an ordered first-day
+> setup with a checkpoint after every step. Then [HANDOFF.md](HANDOFF.md) for what the model is,
+> what the numbers mean, and what is still open.
+
 ## Setup
 
 ```powershell
