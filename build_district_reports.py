@@ -81,14 +81,7 @@ a.dcard .w{font-size:12.5px;margin-top:7px;font-weight:700}
          least one component &mdash; the same screen <code>build_watchlist.py</code> applies.
          Already-poor structures are inspection priorities rather than forecasts, and near-new ones
          are just aging normally, so both are excluded.</p>
-      <div class="callout warn" style="margin:14px 0 0"><b>Read the watch-list within a district,
-         not across them.</b> The rate tracks how complete each district&rsquo;s attribute data is
-         far more closely than how worn its bridges are &mdash; across districts the two correlate
-         <b>&minus;0.96</b>. Where physical attributes are missing the conservative model leans
-         pessimistic, so a district with patchy records looks worse than one with tidy records
-         regardless of actual condition. Attribute coverage is shown on each card for that reason.
-         Ranking districts against each other on this number would be reading the data-entry
-         backlog, not the bridge inventory.</div>
+      %%CONFOUND%%
       <div class="dgrid" style="margin-top:16px">%%CARDS%%</div>
     </div>
   </section>
@@ -105,9 +98,10 @@ a.dcard .w{font-size:12.5px;margin-top:7px;font-weight:700}
 
 def _coverage(bridges):
     """Mean share of model attributes actually present, per district. This is reported on the
-    index because it is a confounder, not a footnote: across districts it correlates -0.96 with
-    the watch-list rate. Where attributes are missing the conservative model leans pessimistic,
-    so a low-coverage district looks like it has worse bridges when it may just have worse data.
+    index because it can be a confounder rather than a footnote: on a source with uneven
+    coverage it correlated -0.96 with the watch-list rate, because where attributes are missing
+    the conservative model leans pessimistic and a low-coverage district looks like it has worse
+    bridges when it may just have worse records. See _confound_note, which measures this per run.
     """
     vals = [b["feat_present"] / b["feat_total"] for b in bridges if b.get("feat_total")]
     return 100.0 * sum(vals) / len(vals) if vals else 0.0
@@ -140,6 +134,54 @@ def _trending_poor(bridges, watchlist):
     return n
 
 
+def _confound_note(rows):
+    """State the coverage/watch-list relationship as it is in THIS run, not as it was in some
+    earlier one.
+
+    On the local CSV export the two correlate -0.96: attributes were missing unevenly, the
+    conservative model leaned pessimistic where they were, and the watch-list rate largely
+    measured the data-entry backlog. On the live source, which supplies those attributes
+    directly, coverage is uniform and the correlation collapses to about zero. A hard-coded
+    warning would be wrong in one of those two worlds, and telling a reader not to compare
+    districts when the data supports it is its own kind of error.
+    """
+    cov = [r["coverage"] for r in rows]
+    rate = [(100.0 * r["poor"] / r["bridges"]) if r["bridges"] else 0.0 for r in rows]
+    n = len(rows)
+    # Three points correlate near +-1 by construction. Below this many districts the coefficient
+    # says nothing, and printing it either way would be inventing a finding.
+    if n < 8:
+        return ('<div class="callout" style="margin:14px 0 0"><b>Partial run.</b> Only '
+                f'{n} district{"" if n == 1 else "s"} were built, too few to judge whether the '
+                'watch-list rate is tracking bridge condition or how complete each district&rsquo;s '
+                'attribute records are. Build the full set before comparing districts.</div>')
+    corr = 0.0
+    if n >= 3:
+        mc, mr = sum(cov) / n, sum(rate) / n
+        num = sum((a - mc) * (b - mr) for a, b in zip(cov, rate))
+        dc = sum((a - mc) ** 2 for a in cov) ** 0.5
+        dr = sum((b - mr) ** 2 for b in rate) ** 0.5
+        corr = num / (dc * dr) if dc and dr else 0.0
+    lo, hi = (min(cov), max(cov)) if cov else (0, 0)
+
+    if corr <= -0.5:
+        return ('<div class="callout warn" style="margin:14px 0 0"><b>Read the watch-list within a '
+                'district, not across them.</b> In this run the rate tracks how complete each '
+                'district&rsquo;s attribute records are more closely than how worn its bridges are '
+                f'&mdash; the two correlate <b>{corr:+.2f}</b>, over a coverage spread of '
+                f'{lo:.0f}&ndash;{hi:.0f}%. Where physical attributes are missing the conservative '
+                'model leans pessimistic, so a district with patchy records looks worse than one '
+                'with tidy records regardless of actual condition. Ranking districts against each '
+                'other here would be reading the data-entry backlog, not the bridge inventory.</div>')
+    return ('<div class="callout" style="margin:14px 0 0"><b>Comparable across districts in this '
+            f'run.</b> Attribute coverage is even ({lo:.0f}&ndash;{hi:.0f}% everywhere) and the '
+            f'watch-list rate is essentially uncorrelated with it (<b>{corr:+.2f}</b>), so the '
+            'differences below reflect the bridges rather than the completeness of the records. '
+            'That is worth re-checking whenever the data source changes &mdash; on an earlier '
+            'export with uneven coverage the same two figures correlated &minus;0.96, and the '
+            'ranking was meaningless.</div>')
+
+
 def write_index(rows, meta, out_dir, watchlist):
     cards = []
     for r in sorted(rows, key=lambda x: (len(str(x["district"])), str(x["district"]))):
@@ -152,7 +194,9 @@ def write_index(rows, meta, out_dir, watchlist):
             f'<div class="n">{r["bridges"]:,} bridges &middot; {r["size_mb"]:.1f} MB</div>'
             f'<div class="w">{r["poor"]:,} on the watch-list '
             f'<span class="muted" style="font-weight:400">({pct:.0f}%)</span></div>'
-            f'<div class="n">attribute coverage {r["coverage"]:.0f}%</div></a>')
+            + (f'<div class="n">{r["on_system"]:,} on-system &middot; '
+               f'{r["off_system"]:,} off-system</div>' if r.get("on_system") is not None else '')
+            + f'<div class="n">attribute coverage {r["coverage"]:.0f}%</div></a>')
     page = (INDEX_TEMPLATE
             .replace("%%CSS%%", BRAND_CSS)
             .replace("%%LOGO%%", LOGO_SVG)
@@ -160,6 +204,7 @@ def write_index(rows, meta, out_dir, watchlist):
             .replace("%%NBRIDGE%%", f"{sum(r['bridges'] for r in rows):,}")
             .replace("%%SOURCE%%", html.escape(meta.get("source_label", "—")))
             .replace("%%GENERATED%%", html.escape(meta.get("generated", "")))
+            .replace("%%CONFOUND%%", _confound_note(rows))
             .replace("%%HORIZON%%", str(watchlist.get("horizon_years", 10)))
             .replace("%%THRESH%%", str(watchlist.get("poor_threshold", 5.0)))
             .replace("%%LO%%", str(watchlist.get("current_min", 5)))
@@ -330,7 +375,8 @@ def main():
         poor = _trending_poor(bridges, watchlist)
         cov = _coverage(bridges)
         rows.append({"district": d, "file": fname, "bridges": len(bridges),
-                     "size_mb": size_mb, "poor": poor, "coverage": cov})
+                     "size_mb": size_mb, "poor": poor, "coverage": cov,
+                     "on_system": dmeta.get("n_on_system"), "off_system": dmeta.get("n_off_system")})
         print(f"  [{i:>2}/{len(districts)}] district {d:<4} {len(bridges):>6,} bridges  "
               f"{size_mb:>5.1f} MB  {poor:>5,} watch-list  {cov:>4.0f}% coverage")
 

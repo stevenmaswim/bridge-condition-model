@@ -208,7 +208,19 @@ def build_data(config, codes=None, district=None, driver_features=(), events=Non
         if entry["targets"]:
             bridges.append(entry)
 
+    # On/off-system counts, classified per bridge from its latest record. Reported because
+    # "how many on-system bridges is this" is the first question asked of any scoped pull, and
+    # deriving it afterwards from the page is impossible -- the payload does not carry the flag.
+    system_col = config.get("data", {}).get("system_col")
+    n_on = n_off = None
+    if system_col and system_col in latest.columns:
+        sysv = latest[system_col].astype(str).str.strip().str.upper()
+        n_on = int(sysv.eq("ON").sum())
+        n_off = int(len(sysv) - n_on)
+
     meta = {
+        "n_on_system": n_on,
+        "n_off_system": n_off,
         "val_keys": value_cols,      # names for the positional bridge["vals"] array
         "attr_names": attr_cols,     # names for the bridge["feat_missing"] indices
         "source_label": _source_label(config),
