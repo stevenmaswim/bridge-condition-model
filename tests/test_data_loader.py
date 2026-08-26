@@ -51,7 +51,7 @@ def test_normalize_decodes_packed_legacy_encodings():
     live = pd.DataFrame({
         "latitude": [29153429.0], "longitude": [95210096.0],
         "inventory_load_rating_factor": [227.0], "operating_load_rating_factor": [236.0]})
-    out = normalize_legacy_encodings(live, {})
+    out = normalize_legacy_encodings(live, verbose=False)
     assert round(out["latitude"].iloc[0], 4) == 29.2595
     assert round(out["longitude"].iloc[0], 4) == -95.3503     # western hemisphere, sign restored
     assert out["inventory_load_rating_factor"].iloc[0] == 2.27
@@ -64,11 +64,31 @@ def test_normalize_leaves_already_decimal_values_alone():
     csv = pd.DataFrame({
         "latitude": [31.32], "longitude": [-97.17],
         "inventory_load_rating_factor": [1.21], "operating_load_rating_factor": [1.65]})
-    out = normalize_legacy_encodings(csv.copy(), {})
+    out = normalize_legacy_encodings(csv.copy(), verbose=False)
     pd.testing.assert_frame_equal(out, csv)
 
 
+def test_normalize_handles_both_packed_widths_and_drops_the_undecodable():
+    """The export does not use one packed width. 29153429 is DDMMSSss; 291534 is the same
+    coordinate with the hundredths dropped. Decoding the short form as if it were the long one
+    yields 0 deg 29' 15.34" = 0.49 -- a plausible-looking float thirty degrees from Texas, which
+    is exactly the kind of value a fitted model cannot flag. Anything that will not decode into
+    the state becomes NaN, which the tree ensemble handles natively."""
+    df = pd.DataFrame({
+        "latitude":  [29153429.0, 291534.0, 29.2595, 0.0, None, 12345678.0],
+        "longitude": [95210096.0, 952100.0, -95.35,  0.0, None, 999.0]})
+    out = normalize_legacy_encodings(df, verbose=False)
+
+    # the two widths differ only by the dropped hundredths of an arcsecond -- about 9 m
+    assert abs(out["latitude"].iloc[0] - out["latitude"].iloc[1]) < 1e-3
+    assert all(round(out["latitude"].iloc[i], 2) == 29.26 for i in (0, 1, 2))
+    assert round(out["longitude"].iloc[0], 2) == round(out["longitude"].iloc[1], 2) == -95.35
+    # 0 means "not recorded", and neither the out-of-state nor the unparseable value survives
+    assert out.loc[3:5, "latitude"].isna().all()
+    assert out.loc[3:5, "longitude"].isna().all()
+
+
 def test_normalize_tolerates_missing_columns_and_nulls():
-    out = normalize_legacy_encodings(pd.DataFrame({"latitude": [None, 29153429.0]}), {})
+    out = normalize_legacy_encodings(pd.DataFrame({"latitude": [None, 29153429.0]}), verbose=False)
     assert pd.isna(out["latitude"].iloc[0])
     assert round(out["latitude"].iloc[1], 4) == 29.2595

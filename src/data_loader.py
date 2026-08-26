@@ -56,26 +56,45 @@ def rename_raw_columns(df, config):
 # Columns the legacy inspection-history export stores in a packed integer form, and the plausible
 # range of the real decoded value. Anything already inside its range is left alone, so this is a
 # no-op on sources that already hand us decimals (e.g. the SNBI CSV export).
-_DEGREES_COLS = ("latitude", "longitude")
 _HUNDREDTHS_COLS = ("inventory_load_rating_factor", "operating_load_rating_factor")
+
+# Generous bounding box around Texas. Used only to decide whether a decoded coordinate is
+# believable -- anything outside becomes NaN rather than being passed on as a number. A tree
+# ensemble handles NaN natively and correctly; it cannot tell that 0.49 is a failed decode.
+_GEO_BOUNDS = {"latitude": (24.0, 38.0), "longitude": (-108.0, -92.0)}
 
 
 def _decode_packed_degrees(series):
-    """DDMMSSss integer -> decimal degrees. 29153429 -> 29 deg 15' 34.29" -> 29.2595.
+    """Packed sexagesimal integer -> decimal degrees, tolerant of the widths in the wild.
 
-    The legacy HIST_BRG_INSP_DATA table stores NBI items 16/17 this way, while the SNBI export
-    stores plain decimals. Values already in the plausible decimal range (|v| <= 200) pass
-    through untouched, so this is safe to run on either source."""
+    The legacy history table stores NBI items 16/17 as a packed integer, but not at a single
+    width: 29153429 is DDMMSSss (29 deg 15' 34.29") while 291534 is DDMMSS with the hundredths
+    dropped. Decoding everything as DDMMSSss turns the six-digit form into 0 deg 29' 15.34",
+    i.e. 0.49 -- a number that looks fine to a fitted model and is off by thirty degrees.
+
+    Widths are therefore dispatched by magnitude, and values already in decimal degrees pass
+    through. Zero means "not recorded" in this export, not the Gulf of Guinea, so it is dropped.
+    """
     v = pd.to_numeric(series, errors="coerce")
-    packed = v.abs() > 200
-    if not packed.any():
-        return v
     a = v.abs()
-    decoded = (a // 1_000_000) + ((a % 1_000_000) // 10_000) / 60.0 + ((a % 10_000) / 100.0) / 3600.0
-    return v.where(~packed, decoded * np.sign(v).replace(0, 1))
+    sign = np.where(v < 0, -1.0, 1.0)
+    mag = pd.Series(np.nan, index=v.index, dtype="float64")
+
+    decimal = a.gt(0) & a.le(200)                                    # 29.2595
+    mag[decimal] = a[decimal]
+
+    ddmmssss = a.ge(1_000_000) & a.lt(1_000_000_000)                 # 29153429
+    d = a[ddmmssss]
+    mag[ddmmssss] = d // 1_000_000 + (d % 1_000_000) // 10_000 / 60.0 + (d % 10_000) / 100.0 / 3600.0
+
+    ddmmss = a.ge(10_000) & a.lt(1_000_000)                          # 291534
+    d = a[ddmmss]
+    mag[ddmmss] = d // 10_000 + (d % 10_000) // 100 / 60.0 + (d % 100) / 3600.0
+
+    return mag * sign
 
 
-def normalize_legacy_encodings(df, config):
+def normalize_legacy_encodings(df, config=None, verbose=True):
     """Undo the legacy export's packed encodings so every source presents the same units.
 
     Why this exists: the models were fit on decimal degrees and load-rating factors around
@@ -85,16 +104,28 @@ def normalize_legacy_encodings(df, config):
     contributing. Inventory load rating is the 3rd-ranked feature for substructure, so that is
     not a rounding problem.
 
-    Every rule below is guarded on magnitude, so a source that is already in the right units is
-    unchanged.
+    Every rule is guarded on magnitude, so a source already in the right units is unchanged.
     """
-    for col in _DEGREES_COLS:
-        if col in df.columns:
-            df[col] = _decode_packed_degrees(df[col])
-    # TxDOT bridges are all in the western hemisphere; the packed form carries no sign.
-    if "longitude" in df.columns:
-        lon = pd.to_numeric(df["longitude"], errors="coerce")
-        df["longitude"] = lon.where(lon <= 0, -lon)
+    for col, (lo, hi) in _GEO_BOUNDS.items():
+        if col not in df.columns:
+            continue
+        before = pd.to_numeric(df[col], errors="coerce")
+        out = _decode_packed_degrees(before)
+        if col == "longitude":
+            # the packed form carries no sign and every TxDOT bridge is west of the meridian
+            out = out.where(out <= 0, -out)
+        # A coordinate we cannot land inside the state is a failed decode or an unrecorded
+        # value. NaN is the honest answer; a wrong number is not.
+        implausible = out.notna() & ~out.between(lo, hi)
+        out = out.mask(implausible)
+        if verbose:
+            lost = int(implausible.sum())
+            unrecorded = int((before.notna() & before.eq(0)).sum())
+            if lost or unrecorded:
+                print(f"  [units] {col}: {lost:,} implausible -> NaN, "
+                      f"{unrecorded:,} recorded as 0 (not captured)")
+        df[col] = out
+
     for col in _HUNDREDTHS_COLS:
         if col in df.columns:
             v = pd.to_numeric(df[col], errors="coerce")
