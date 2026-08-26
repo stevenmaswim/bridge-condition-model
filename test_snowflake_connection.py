@@ -30,13 +30,32 @@ from src.snowflake_loader import _connect, load_from_snowflake
 # deterioration curve; at ~1.0 the source is a current-values table, not a panel.
 MIN_INSPECTIONS_PER_BRIDGE = 3.0
 
+# Physically plausible ranges for the numeric columns the model consumes. These exist because a
+# fitted tree ensemble does not complain about out-of-range inputs -- values simply fall to one
+# side of every learned split and the feature silently stops contributing. That is exactly how the
+# legacy table's packed coordinates (29153429 for a latitude) and x100 load ratings went unnoticed.
+# Ranges are deliberately generous: this is a units/encoding check, not an outlier hunt.
+PLAUSIBLE_RANGE = {
+    "latitude": (25.0, 37.0),                    # Texas
+    "longitude": (-107.0, -93.0),                # Texas, western hemisphere
+    "inventory_load_rating_factor": (0.0, 10.0),
+    "operating_load_rating_factor": (0.0, 10.0),
+    "deck_cond_rating": (0.0, 9.0),
+    "superstructure_cond_rating": (0.0, 9.0),
+    "substructure_cond_rating": (0.0, 9.0),
+    "culvert_cond_rating": (0.0, 9.0),
+    "year_built": (1800.0, 2100.0),
+    "skew_angle": (0.0, 99.0),
+}
+MAX_OUT_OF_RANGE_PCT = 5.0
+
 
 def _panel_shape(df, config):
     """Report whether this really is a time-series panel, and say so in plain terms."""
     id_col = config["data"]["id_col"]
     insp_col = config["data"]["inspection_date_col"]
 
-    print("\nStep 4/4  Panel shape -- is this inspection history or current values?")
+    print("\nStep 4/5  Panel shape -- is this inspection history or current values?")
     for col, label in ((id_col, "bridge id"), (insp_col, "inspection date")):
         if col not in df.columns:
             print(f"  Cannot check: no '{col}' column ({label}) in the result.")
@@ -81,6 +100,33 @@ def _panel_shape(df, config):
     return False
 
 
+def _value_ranges(df):
+    """Catch units/encoding drift between sources before it reaches the model."""
+    print("\nStep 5/5  Value ranges -- are the units what the model was fitted on?")
+    problems = []
+    for col, (lo, hi) in PLAUSIBLE_RANGE.items():
+        if col not in df.columns:
+            continue
+        v = pd.to_numeric(df[col], errors="coerce").dropna()
+        if v.empty:
+            continue
+        bad_pct = 100.0 * (~v.between(lo, hi)).mean()
+        flag = "  <-- OUT OF RANGE" if bad_pct > MAX_OUT_OF_RANGE_PCT else ""
+        if flag:
+            problems.append((col, bad_pct, v.median(), lo, hi))
+        print(f"  {col:<30} median={v.median():>12,.2f}   expected {lo:g}..{hi:g}   "
+              f"outside={bad_pct:5.1f}%{flag}")
+    if not problems:
+        print("  All checked columns are in the units the model expects.")
+        return True
+    print("\n  PROBLEM: the columns flagged above are not in the units the model was fitted on.")
+    print("  A tree ensemble will NOT raise on these -- the values fall past every learned split")
+    print("  and the feature stops contributing, quietly. Check the aliases in")
+    print("  config.snowflake.query, and whether src/data_loader.normalize_legacy_encodings")
+    print("  covers this source's encoding.")
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser(description="Verify the Snowflake connection and query.")
     ap.add_argument("--district", default="12",
@@ -93,7 +139,7 @@ def main():
     config = load_config(args.config)
     sf = config.get("snowflake", {}) or {}
 
-    print("Step 1/4  Connecting to Snowflake ...")
+    print("Step 1/5  Connecting to Snowflake ...")
     try:
         conn = _connect(sf)
     except Exception as e:                      # noqa: BLE001 -- surface any setup problem plainly
@@ -113,10 +159,10 @@ def main():
     if not args.all:
         dist_col = config["grouping"]["district_col"]
         config["_snowflake_filter"] = {"column": dist_col, "values": [str(args.district)]}
-        print(f"\nStep 2/4  Running your query, scoped to district {args.district} "
+        print(f"\nStep 2/5  Running your query, scoped to district {args.district} "
               f"(use --all for the whole table) ...")
     else:
-        print("\nStep 2/4  Running your query over the WHOLE table -- this may take a while ...")
+        print("\nStep 2/5  Running your query over the WHOLE table -- this may take a while ...")
 
     try:
         df = load_from_snowflake(config)         # prints row/column counts itself
@@ -128,7 +174,7 @@ def main():
         print("\n  Query returned no rows. If you scoped to a district, try another, or --all.")
         sys.exit(1)
 
-    print("\nStep 3/4  Preview -- these are the columns the model will receive:")
+    print("\nStep 3/5  Preview -- these are the columns the model will receive:")
     print("  columns:", list(df.columns))
     print(df.head(5).to_string())
 
@@ -141,8 +187,17 @@ def main():
 
     is_panel = _panel_shape(df, config)
 
+    # ranges are checked on the CLEANED frame -- that is where the model actually reads from,
+    # and where normalize_legacy_encodings has had its chance to run
+    from src.data_loader import clean_data, rename_raw_columns
+    try:
+        ranges_ok = _value_ranges(clean_data(rename_raw_columns(df.copy(), config), config))
+    except Exception as e:                       # noqa: BLE001
+        print(f"\nStep 5/5  Could not check value ranges: {e}")
+        ranges_ok = True
+
     print()
-    if not missing and is_panel:
+    if not missing and is_panel and ranges_ok:
         print("  All core model columns present and the source is a panel. "
               "You're ready to set data.source: snowflake.")
     else:

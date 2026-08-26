@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from src.data_loader import clean_data, rename_raw_columns
+from src.data_loader import clean_data, rename_raw_columns, normalize_legacy_encodings
 
 
 def _config():
@@ -41,3 +41,34 @@ def test_clean_data_coerces_N_and_drops_all_nan_target_rows():
     out = clean_data(df, cfg)
     assert len(out) == 1                       # row A had all-NaN targets -> dropped
     assert out.iloc[0]["deck_cond_rating"] == 7
+
+
+def test_normalize_decodes_packed_legacy_encodings():
+    """The live history table packs coordinates as DDMMSSss and load ratings x100, while the
+    CSV export uses plain decimals. Feeding packed values to a fitted tree ensemble raises
+    nothing -- they fall off the end of every learned split and the feature silently stops
+    contributing -- so the decode has to happen before the model ever sees them."""
+    live = pd.DataFrame({
+        "latitude": [29153429.0], "longitude": [95210096.0],
+        "inventory_load_rating_factor": [227.0], "operating_load_rating_factor": [236.0]})
+    out = normalize_legacy_encodings(live, {})
+    assert round(out["latitude"].iloc[0], 4) == 29.2595
+    assert round(out["longitude"].iloc[0], 4) == -95.3503     # western hemisphere, sign restored
+    assert out["inventory_load_rating_factor"].iloc[0] == 2.27
+    assert out["operating_load_rating_factor"].iloc[0] == 2.36
+
+
+def test_normalize_leaves_already_decimal_values_alone():
+    """Guarded on magnitude, so running it on a source that is already in the right units --
+    which is what the training CSV is -- must change nothing."""
+    csv = pd.DataFrame({
+        "latitude": [31.32], "longitude": [-97.17],
+        "inventory_load_rating_factor": [1.21], "operating_load_rating_factor": [1.65]})
+    out = normalize_legacy_encodings(csv.copy(), {})
+    pd.testing.assert_frame_equal(out, csv)
+
+
+def test_normalize_tolerates_missing_columns_and_nulls():
+    out = normalize_legacy_encodings(pd.DataFrame({"latitude": [None, 29153429.0]}), {})
+    assert pd.isna(out["latitude"].iloc[0])
+    assert round(out["latitude"].iloc[1], 4) == 29.2595
