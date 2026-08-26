@@ -87,6 +87,18 @@ def _panel_shape(df, config):
         per_bridge_events = 0.0
         print("  No inspection dates parsed -- check the inspection_date alias and its format.")
 
+    # On/off-system split. An on-system bridge is on the state highway system by definition, so
+    # the highway filter should keep essentially all of them and cut into off-system instead --
+    # a filter that is quietly dropping on-system structures is a filter that is wrong.
+    system_col = config.get("data", {}).get("system_col")
+    if system_col and system_col in df.columns:
+        sysv = df[system_col].astype(str).str.strip().str.upper()
+        ids = df[id_col].astype(str).str.strip()
+        on = ids[sysv.eq("ON")].nunique()
+        off = ids[~sysv.eq("ON")].nunique()
+        print(f"  on-system bridges: {on:,}   off-system: {off:,}   "
+              f"(on-system share {100 * on / max(on + off, 1):.1f}%)")
+
     if per_bridge_events >= MIN_INSPECTIONS_PER_BRIDGE:
         print(f"  PANEL CONFIRMED -- {per_bridge_events:.1f} inspections per bridge is enough to "
               f"build forward pairs. Safe to train.")
