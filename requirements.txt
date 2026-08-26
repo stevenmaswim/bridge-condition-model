@@ -7,3 +7,9 @@ matplotlib>=3.7.0
 seaborn>=0.12.0
 jupyter>=1.0.0
 openpyxl>=3.1.0
+
+# Live Snowflake source. Required, not optional: config.yaml ships with
+# data.source: snowflake, so a default run needs these on the first install.
+# The [pandas] extra is required -- snowflake_loader calls cur.fetch_pandas_all().
+snowflake-connector-python[pandas]>=3.0.0
+python-dotenv>=1.0.0
