@@ -124,6 +124,14 @@ def normalize_legacy_encodings(df, config=None, verbose=True):
             if lost or unrecorded:
                 print(f"  [units] {col}: {lost:,} implausible -> NaN, "
                       f"{unrecorded:,} recorded as 0 (not captured)")
+            # Report the digit widths that failed. A packed width this decoder does not handle
+            # would show up as one dominant length -- that is a decoder gap to fix, not missing
+            # data to accept. Without this the two are indistinguishable from the outside.
+            if lost:
+                widths = (before[implausible].abs().dropna().astype("int64").astype(str)
+                          .str.len().value_counts().sort_index())
+                shape = ", ".join(f"{w}-digit x{c:,}" for w, c in widths.items() if c)
+                print(f"           failed widths: {shape}")
         df[col] = out
 
     for col in _HUNDREDTHS_COLS:
@@ -166,7 +174,23 @@ def clean_data(df, config):
     available = [c for c in all_cols if c in df.columns]
     missing = [c for c in all_cols if c not in df.columns]
     if missing:
-        print(f"Warning: columns not found in data, skipping: {missing}")
+        # This is a SCHEMA message -- these columns are absent from the source query, which is a
+        # different thing from a bridge having a blank value. Saying only "missing" invites the
+        # reading that most bridges lack them. Several are expected: bridge_age is engineered at
+        # runtime and never appears in a source, and the enrichment extract supplies its own set
+        # further down the pipeline, after this point.
+        enr = config.get("enrichment", {}) or {}
+        from_extract = set(enr.get("static_numeric", []) or []) | set(enr.get("static_categorical", []) or [])
+        derived = {"bridge_age", "deck_area"}
+        later = sorted(c for c in missing if c in from_extract)
+        engineered = sorted(c for c in missing if c in derived)
+        absent = sorted(c for c in missing if c not in from_extract and c not in derived)
+        if absent:
+            print(f"Note: not provided by this source: {absent}")
+        if later:
+            print(f"      (supplied later by the enrichment extract: {later})")
+        if engineered:
+            print(f"      (derived during feature engineering: {engineered})")
 
     df = df[available].copy()
 
