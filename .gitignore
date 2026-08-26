@@ -16,12 +16,28 @@ build/
 .idea/
 *.log
 
-# --- kept out of the (public) repo: data, model binaries, reports, tooling ---
+# --- kept out of the (public) repo: data, model binaries, generated output, tooling ---
 .claude/
 models/
 data/
-sme_review/
 forecast_ui.html
+
+# PDFs are excluded because their contents cannot be reviewed at commit time, and several are
+# rendered from the .md sources tracked alongside them. SME_Review.pdf in particular is believed
+# to embed the per-bridge backtest table, which is deliberately not published (see below).
 *.pdf
-Bridge_Model_Status_Report_v2.md
-Data_Parameters_and_Testing_Report.md
+
+# --- SME review: aggregate exhibits are tracked, per-bridge outputs are not -------------------
+# The exhibits below are aggregates (per starting rating, per material, per feature) carrying no
+# bridge identifiers, so they can travel with the code -- the validation appendix rendered by
+# forecast_ui.py and the numbers quoted in the reports are built from exactly these files.
+# sample_forecasts_backtest.csv and the district watch-lists are excluded instead: they list
+# individual structures by NBI code, which is an internal analytical product rather than
+# something to publish from a public repository.
+sme_review/*
+!sme_review/SME_Review_Packet.md
+!sme_review/accuracy_by_starting_rating.csv
+!sme_review/benchmark_vs_markov.csv
+!sme_review/deterioration_by_material.csv
+!sme_review/feature_importance.csv
+!sme_review/scatter_sample.csv

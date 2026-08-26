@@ -1,0 +1,9 @@
+component,horizon_yr,carry_forward_MAE,markov_MAE,ml_MAE
+Deck,10,0.498,0.456,0.407
+Deck,20,0.707,0.51,0.439
+Superstructure,10,0.483,0.487,0.432
+Superstructure,20,0.711,0.529,0.461
+Substructure,10,0.548,0.499,0.444
+Substructure,20,0.754,0.568,0.47
+Culvert,10,0.371,0.422,0.377
+Culvert,20,0.539,0.509,0.438
