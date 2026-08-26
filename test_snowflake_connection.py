@@ -92,10 +92,15 @@ def _panel_shape(df, config):
     # a filter that is quietly dropping on-system structures is a filter that is wrong.
     system_col = config.get("data", {}).get("system_col")
     if system_col and system_col in df.columns:
-        sysv = df[system_col].astype(str).str.strip().str.upper()
-        ids = df[id_col].astype(str).str.strip()
-        on = ids[sysv.eq("ON")].nunique()
-        off = ids[~sysv.eq("ON")].nunique()
+        # Classify each bridge once, by its most recent record. Counting rows instead
+        # double-counts any bridge that was reclassified between on- and off-system over its
+        # history -- 3,387 + 3,627 came to 7,014 against a true total of 6,796 that way.
+        tmp = pd.DataFrame({"id": df[id_col].astype(str).str.strip(),
+                            "sys": df[system_col].astype(str).str.strip().str.upper(),
+                            "d": dates})
+        latest_sys = tmp.dropna(subset=["d"]).sort_values("d").groupby("id")["sys"].last()
+        on = int((latest_sys == "ON").sum())
+        off = int((latest_sys != "ON").sum())
         print(f"  on-system bridges: {on:,}   off-system: {off:,}   "
               f"(on-system share {100 * on / max(on + off, 1):.1f}%)")
 
