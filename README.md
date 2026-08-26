@@ -67,6 +67,47 @@ python build_watchlist.py --district 12
 python forecast_ui.py --codes 120200152401017,121700017714043     # or --file codes.txt / --district 12
 ```
 
+## District report packs (what you send someone)
+
+`build_district_reports.py` builds one self-contained HTML report per district plus an index
+page linking them, and optionally zips the lot. It pulls the source panel **once** and reuses it
+for all 25 districts — with Snowflake's `externalbrowser` auth, a naive loop would prompt you to
+log in 25 times.
+
+```powershell
+# Overview -- every highway bridge, state-maintained and locally owned
+./venv/Scripts/python.exe build_district_reports.py --zip
+#   -> reports/  +  TxDOT_Bridge_Condition_Forecast_<date>.zip
+
+# Budget scope -- state-maintained (on-system) bridges only, what TxDOT funds
+./venv/Scripts/python.exe build_district_reports.py --on-system-only --zip
+#   -> reports_on_system/  +  TxDOT_Bridge_Condition_Forecast_on-system_<date>.zip
+
+# A few districts, e.g. to check something quickly
+./venv/Scripts/python.exe build_district_reports.py --districts 12,15,18
+```
+
+The two scopes write to **different folders and different archive names on purpose** — the output
+folder is cleared on entry, so sharing a path would mean the second build silently destroyed the
+first. Roughly 3 minutes and one SSO prompt for a full statewide run; about 52 MB of HTML that
+deflates to under 4 MB.
+
+Which to send: the overview for "here is the inventory," the on-system build for anything that
+feeds a funding decision — `config.yaml`'s own watch-list defaults to `on_system_only: true`
+for that reason.
+
+**Before trusting a run against a new source**, check it:
+
+```powershell
+./venv/Scripts/python.exe test_snowflake_connection.py          # one district, seconds
+```
+
+Five steps: credentials, query, columns, **panel shape**, **value ranges**. Steps 4 and 5 exist
+because both failures are silent — a current-values table trains a model with no transitions to
+learn from and raises nothing, and a source whose coordinates are packed integers or whose load
+ratings are ×100 just falls past every learned split with the feature quietly contributing
+nothing. Both have already happened here.
+
 ## Project structure
 
 - `src/data_loader.py` — load raw data, rename columns, clean (numeric coercion, keep id + inspection date)

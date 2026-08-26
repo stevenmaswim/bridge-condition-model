@@ -1,8 +1,17 @@
 """Build one TxDOT-branded forecast report per district, plus an index page linking them.
 
-    ./venv/Scripts/python.exe build_district_reports.py
+    # Overview -- every highway bridge, state-maintained and locally owned
+    ./venv/Scripts/python.exe build_district_reports.py --zip
+
+    # Budget scope -- state-maintained (on-system) bridges only, what TxDOT funds
+    ./venv/Scripts/python.exe build_district_reports.py --on-system-only --zip
+
+    # A few districts
     ./venv/Scripts/python.exe build_district_reports.py --districts 12,15,18
-    ./venv/Scripts/python.exe build_district_reports.py --on-system-only
+
+The two scopes deliberately write to different folders (reports/ vs reports_on_system/) and
+different archive names. The output folder is cleared on entry, so sharing a path would mean
+the second build silently destroyed the first.
 
 Why per district rather than one statewide page: at ~1 KB of embedded forecast per bridge, a
 statewide report is 40-70 MB -- too large to email and slow to parse before first paint. One
@@ -271,6 +280,7 @@ DATA SOURCE
 -----------
 {source}
 {nbridge} bridges across {ndist} districts.
+{scope_line}
 
 WHAT THE MODEL CANNOT DO
 ------------------------
@@ -289,12 +299,23 @@ section at the bottom of every district report.
 """
 
 
-def write_zip(rows, meta, out_dir, watchlist, zip_path):
+def write_zip(rows, meta, out_dir, watchlist, zip_path, scope="all"):
     """Package the folder plus a plain-text guide, ready to email."""
     folder = "Bridge_Condition_Forecast"
+    on = sum(r.get("on_system") or 0 for r in rows)
+    off = sum(r.get("off_system") or 0 for r in rows)
+    if scope == "on_system":
+        scope_line = ("Scope: STATE-MAINTAINED (on-system) bridges only - the structures TxDOT\n"
+                      "funds. Locally owned county and city bridges are excluded.")
+    elif on or off:
+        scope_line = (f"Scope: ALL highway bridges, both state-maintained and locally owned\n"
+                      f"({on:,} on-system, {off:,} off-system). For a budget discussion, the\n"
+                      f"on-system-only build is the relevant one.")
+    else:
+        scope_line = ""
     readme = README.format(
         generated=meta.get("generated", ""), source=meta.get("source_label", "—"),
-        nbridge=f"{sum(r['bridges'] for r in rows):,}", ndist=len(rows),
+        nbridge=f"{sum(r['bridges'] for r in rows):,}", ndist=len(rows), scope_line=scope_line,
         lo=watchlist.get("current_min", 5), hi=watchlist.get("current_max", 7),
         horizon=watchlist.get("horizon_years", 10), thresh=watchlist.get("poor_threshold", 5.0))
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
@@ -307,8 +328,9 @@ def write_zip(rows, meta, out_dir, watchlist, zip_path):
 
 def main():
     ap = argparse.ArgumentParser(description="Build one forecast report per district.")
-    ap.add_argument("--out-dir", default="reports",
-                    help="Folder to write the reports and index into (default: reports)")
+    ap.add_argument("--out-dir", default=None,
+                    help="Folder to write the reports and index into "
+                         "(default: reports, or reports_on_system with --on-system-only)")
     ap.add_argument("--districts", default=None,
                     help="Comma-separated districts (default: every district in the data)")
     ap.add_argument("--on-system-only", action="store_true",
@@ -320,6 +342,13 @@ def main():
                     help="Also package the folder as a .zip ready to send (default name if "
                          "no path given)")
     args = ap.parse_args()
+
+    # Scope the output folder and archive name, so the budget run and the overview run cannot
+    # overwrite each other. The folder is cleared on entry and the zip name is date-stamped
+    # only, so without this the second build silently destroys the first.
+    scope = "on_system" if args.on_system_only else "all"
+    if args.out_dir is None:
+        args.out_dir = "reports_on_system" if args.on_system_only else "reports"
 
     config = load_config(args.config)
     id_col = config["data"]["id_col"]
@@ -390,10 +419,11 @@ def main():
     if skipped:
         print(f"Skipped (no forecastable bridges): {', '.join(map(str, skipped))}")
     if args.zip_path:
+        suffix = "_on-system" if args.on_system_only else ""
         name = (args.zip_path if args.zip_path != "auto"
-                else f"TxDOT_Bridge_Condition_Forecast_"
+                else f"TxDOT_Bridge_Condition_Forecast{suffix}_"
                      f"{dt.datetime.now().strftime('%Y-%m-%d')}.zip")
-        write_zip(rows, meta, args.out_dir, watchlist, name)
+        write_zip(rows, meta, args.out_dir, watchlist, name, scope)
         print(f"Packaged {name} ({os.path.getsize(name)/1e6:.1f} MB) -- ready to send")
     print(f"Open {index}")
 
