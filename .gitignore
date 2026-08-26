@@ -41,3 +41,6 @@ sme_review/*
 !sme_review/deterioration_by_material.csv
 !sme_review/feature_importance.csv
 !sme_review/scatter_sample.csv
+
+# generated district reports (large, regenerate with build_district_reports.py)
+reports/
