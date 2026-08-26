@@ -50,6 +50,25 @@ def _read_extract(path, has_header):
     return df.replace({"NULL": np.nan, "": np.nan})
 
 
+@lru_cache(maxsize=4)
+def _build_lookup(path, has_header, id_col, numeric, categorical):
+    """Build the per-bridge lookup once per (file, config) combination.
+
+    _read_extract already caches the file read, but the de-duplication and rename below ran on
+    every call -- 63,242 rows re-processed and re-announced once per district, 25 times over in
+    a full build. Arguments are plain hashables so lru_cache can key on them.
+    """
+    df = _read_extract(path, has_header=has_header)
+    if "as_code" not in df.columns:
+        print("  [enrichment] no 'as_code' column found; skipping enrichment")
+        return None
+    feats = [c for c in list(numeric) + list(categorical) if c in df.columns]
+    lookup = df[["as_code"] + feats].drop_duplicates("as_code").rename(columns={"as_code": id_col})
+    print(f"  [enrichment] loaded {len(lookup):,} bridges x {len(feats)} static features "
+          f"({', '.join(feats)})")
+    return lookup
+
+
 def load_static_features(config):
     """Return a per-bridge lookup DataFrame keyed on the model's id column (bridge_id), carrying the
     configured static physical features. Returns None if enrichment is disabled or the file is
@@ -61,23 +80,17 @@ def load_static_features(config):
             print(f"  [enrichment] extract file not found ({path}); using panel features only")
         return None
 
-    df = _read_extract(path, has_header=cfg.get("has_header", False))
-    if "as_code" not in df.columns:
-        print("  [enrichment] no 'as_code' column found; skipping enrichment")
-        return None
-
     numeric = cfg.get("static_numeric", DEFAULT_STATIC_NUMERIC)
     categorical = cfg.get("static_categorical", DEFAULT_STATIC_CATEGORICAL)
-    feats = [c for c in numeric + categorical if c in df.columns]
-
     id_col = config.get("data", {}).get("id_col", "bridge_id")
-    lookup = df[["as_code"] + feats].drop_duplicates("as_code").rename(columns={"as_code": id_col})
+    lookup = _build_lookup(path, bool(cfg.get("has_header", False)), id_col,
+                           tuple(numeric), tuple(categorical))
+    if lookup is None:
+        return None
+    lookup = lookup.copy()   # callers get their own frame; the cached one stays pristine
     for c in numeric:
         if c in lookup.columns:
             lookup[c] = pd.to_numeric(lookup[c], errors="coerce")
-
-    print(f"  [enrichment] loaded {len(lookup):,} bridges x {len(feats)} static features "
-          f"({', '.join(feats)})")
     return lookup
 
 

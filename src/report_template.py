@@ -269,6 +269,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         <div>
           <label for="bridge">Bridge</label>
           <select id="bridge"><option value="">&mdash; select a bridge &mdash;</option></select>
+          <div class="tiny" id="listnote" style="margin-top:5px"></div>
         </div>
         <div>
           <label for="horizon">Forecast horizon &mdash; <span class="hz" id="hzlabel">+10 years</span></label>
@@ -400,9 +401,21 @@ function route(b, h){
 }
 
 /* ---------- selector ---------- */
+/* Cap exists so a very large scope cannot lock the browser building <option> nodes, but a
+   silent cap is worse than a slow page: it looks complete while hiding most of the inventory.
+   If it ever bites, the page says so and tells the reader how to reach the rest. */
+const OPTION_CAP = 12000;
 function fillOptions(list){
+  const shown = list.slice(0, OPTION_CAP);
   sel.innerHTML = '<option value="">— select a bridge —</option>' +
-    list.slice(0, 5000).map(id => '<option value="'+esc(id)+'">'+esc(id)+'</option>').join("");
+    shown.map(id => '<option value="'+esc(id)+'">'+esc(id)+'</option>').join("");
+  const note = document.getElementById('listnote');
+  if (note){
+    note.textContent = list.length > OPTION_CAP
+      ? "Listing " + shown.length.toLocaleString() + " of " + list.length.toLocaleString() +
+        " bridges — type in the filter box to reach the rest."
+      : list.length.toLocaleString() + " bridges in this report.";
+  }
 }
 fillOptions(ALL_IDS);
 

@@ -21,6 +21,7 @@ import datetime as dt
 import html
 import json
 import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -110,24 +111,36 @@ def _display_value(v):
     return text or None
 
 
-def build_data(config, codes=None, district=None, driver_features=()):
-    """Run the model over the requested bridges. Returns (bridges, targets, meta)."""
+def load_panel(config, codes=None, district=None):
+    """One pull from the configured source -> the de-duplicated inspection-event panel.
+
+    Split out from build_data so a multi-district run pulls once and reuses the frame. Each
+    call opens its own Snowflake connection, and with externalbrowser auth that means an
+    interactive SSO round trip -- doing it 25 times is not a build, it is a hostage situation.
+    """
+    id_col = config["data"]["id_col"]
+    dist_col = config["grouping"]["district_col"]
+    if config.get("data", {}).get("source") == "snowflake":
+        if codes:
+            config["_snowflake_filter"] = {"column": id_col, "values": [str(c).strip() for c in codes]}
+        elif district is not None:
+            config["_snowflake_filter"] = {"column": dist_col, "values": [str(district).strip()]}
+    df = clean_data(rename_raw_columns(load_raw_data(config), config), config)
+    return build_inspection_events(df, config)
+
+
+def build_data(config, codes=None, district=None, driver_features=(), events=None):
+    """Run the model over the requested bridges. Returns (bridges, targets, meta).
+
+    Pass `events` to reuse a panel already loaded by load_panel()."""
     id_col = config["data"]["id_col"]
     insp_col = config["data"]["inspection_date_col"]
     dist_col = config["grouping"]["district_col"]
     det_cfg = config.get("deterioration", {}) or {}
     hybrid = det_cfg.get("hybrid_threshold_years", 3.0)
 
-    # When reading live from Snowflake, push the district/bridge filter into the SQL so we only pull
-    # the rows we need (seconds) instead of the whole ~1.7M-row table. Harmless for the CSV source.
-    if config.get("data", {}).get("source") == "snowflake":
-        if codes:
-            config["_snowflake_filter"] = {"column": id_col, "values": [str(c).strip() for c in codes]}
-        elif district is not None:
-            config["_snowflake_filter"] = {"column": dist_col, "values": [str(district).strip()]}
-
-    df = clean_data(rename_raw_columns(load_raw_data(config), config), config)
-    events = build_inspection_events(df, config)
+    if events is None:
+        events = load_panel(config, codes=codes, district=district)
     latest = events.sort_values(insp_col).groupby(id_col, as_index=False).tail(1).copy()
 
     if codes:
@@ -195,7 +208,19 @@ def build_data(config, codes=None, district=None, driver_features=()):
         if entry["targets"]:
             bridges.append(entry)
 
+    # On/off-system counts, classified per bridge from its latest record. Reported because
+    # "how many on-system bridges is this" is the first question asked of any scoped pull, and
+    # deriving it afterwards from the page is impossible -- the payload does not carry the flag.
+    system_col = config.get("data", {}).get("system_col")
+    n_on = n_off = None
+    if system_col and system_col in latest.columns:
+        sysv = latest[system_col].astype(str).str.strip().str.upper()
+        n_on = int(sysv.eq("ON").sum())
+        n_off = int(len(sysv) - n_on)
+
     meta = {
+        "n_on_system": n_on,
+        "n_off_system": n_off,
         "val_keys": value_cols,      # names for the positional bridge["vals"] array
         "attr_names": attr_cols,     # names for the bridge["feat_missing"] indices
         "source_label": _source_label(config),
@@ -615,6 +640,9 @@ def write_html(bridges, targets, meta, exhibits, out_path):
                 .replace("%%META%%", json.dumps(meta))
                 .replace("%%EXHIBITS%%", json.dumps(exhibits))
                 .replace("%%HORIZONS%%", json.dumps(HORIZONS)))
+    left = sorted(set(re.findall(r"%%[A-Z_]+%%", html_str)))
+    if left:
+        raise RuntimeError(f"{out_path}: unsubstituted placeholders {left}")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html_str)
 

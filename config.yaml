@@ -200,40 +200,66 @@ snowflake:
   role: Public
   authenticator: externalbrowser   # TxDOT Microsoft SSO -- opens a browser to log in, no password
   table: null                      # simple option: SELECT * FROM this table
-  # Maps TxDOT's legacy NBI item columns (e.g. "58 Deck Cond") to the model's snake_case names.
-  # This is the live equivalent of data.column_rename_map used for the CSV. Add a
-  # "LIMIT 100" at the end while testing to keep it fast; remove it for a full run.
+  # ---------------------------------------------------------------------------------------------
+  # Rows come from HIST_BRG_INSP_DATA -- the inspection HISTORY table (~1.7M rows, ~20 dated
+  # inspections per bridge). The deterioration model learns from inspection-to-inspection
+  # transitions, so a history source is not optional.
+  #
+  # CORE_SNBI_DATA is used only to decide WHICH bridges qualify, never to supply rows. Verified
+  # 2026-08-22: it returns exactly one row per bridge (6,865 rows / 6,865 bridges in district 12),
+  # so it is a current-values table like TBLCURRENTVALUES. Selecting from it trains a model with
+  # no transitions to learn from, and nothing raises -- run test_snowflake_connection.py, whose
+  # step 4 checks precisely this, before ever repointing this query at a new table.
+  #
+  # The highway restriction is the semi-join below: FEATURES carries one row per feature a
+  # structure interacts with, B.F.01 = 'H01' is a highway feature and B.F.02 = 'C' is the feature
+  # the bridge CARRIES. Together they exclude pedestrian, rail and other structures we do not plan
+  # budget against. Measured effect in district 12: 8,736 bridges -> 6,865 (about 21% dropped).
+  # IN (...) rather than a JOIN on purpose -- a join would multiply history rows by the number of
+  # qualifying features per bridge; a semi-join filters without changing cardinality.
+  #
+  # Aliases must stay snake_case and match the model's column names: snowflake_loader lowercases
+  # whatever Snowflake returns, and data.column_rename_map is NOT applied on this path.
+  # ---------------------------------------------------------------------------------------------
   query: |
     SELECT
-      "0000_StructureID"  AS bridge_id,
-      "90 Last Inspec"    AS inspection_date,          -- integer MMDDYYYY (real per-inspection date)
-      "ON/OFF"            AS on_system,
-      "2 District"        AS txdot_district,
-      "58 Deck Cond"      AS deck_cond_rating,
-      "59 Super Cond"     AS superstructure_cond_rating,
-      "60 SubstrCond"     AS substructure_cond_rating,
-      "62 Culvert"        AS culvert_cond_rating,
-      "27 Yr Built"       AS year_built,
-      "106 Yr Reconstr"   AS year_reconstructed,
-      "29 AADT"           AS adt,
-      "30 AADT Year"      AS adt_year,
-      "49 Str Lgth"       AS structure_length,
-      "48 Max Sp Lgth"    AS max_span_length,
-      "52 Deck Width"     AS deck_width,
-      "51 Rdwy Width"     AS roadway_width,
-      "32 Appr Width"     AS approach_roadway_width,
-      "34 Skew"           AS skew_angle,
-      "45 1 No MSpan"     AS num_spans_main,
-      "45 2 No MjAprSp"   AS num_spans_approach,
-      "16 Latitude"       AS latitude,
-      "17 Longitude"      AS longitude,
-      "66 Inv Rate"       AS inventory_load_rating_factor,
-      "64 Oper Rate"      AS operating_load_rating_factor,
-      "22 Owner"          AS owner,
-      "21 Custodian"      AS maintenance_resp,
-      "26 Func Class"     AS functional_class,
-      "31 Design Load"    AS design_load,
-      "43 1 Mn Span Ty"   AS structure_type,
-      "107 1 Deck Ty MSp" AS deck_type,
-      "108 1 MSp WrSurf"  AS wearing_surface
-    FROM PRD_ADS_BRIDGE_INSP_HIST.BAL_ADS_BRIDGE_INSP_HIST.HIST_BRG_INSP_DATA
+      H."0000_StructureID"  AS bridge_id,
+      H."90 Last Inspec"    AS inspection_date,          -- integer MMDDYYYY (real per-inspection date)
+      H."ON/OFF"            AS on_system,
+      H."2 District"        AS txdot_district,
+      H."58 Deck Cond"      AS deck_cond_rating,
+      H."59 Super Cond"     AS superstructure_cond_rating,
+      H."60 SubstrCond"     AS substructure_cond_rating,
+      H."62 Culvert"        AS culvert_cond_rating,
+      H."27 Yr Built"       AS year_built,
+      H."106 Yr Reconstr"   AS year_reconstructed,
+      H."29 AADT"           AS adt,
+      H."30 AADT Year"      AS adt_year,
+      H."49 Str Lgth"       AS structure_length,
+      H."48 Max Sp Lgth"    AS max_span_length,
+      H."52 Deck Width"     AS deck_width,
+      H."51 Rdwy Width"     AS roadway_width,
+      H."32 Appr Width"     AS approach_roadway_width,
+      H."34 Skew"           AS skew_angle,
+      H."45 1 No MSpan"     AS num_spans_main,
+      H."45 2 No MjAprSp"   AS num_spans_approach,
+      H."16 Latitude"       AS latitude,
+      H."17 Longitude"      AS longitude,
+      H."66 Inv Rate"       AS inventory_load_rating_factor,
+      H."64 Oper Rate"      AS operating_load_rating_factor,
+      H."22 Owner"          AS owner,
+      H."21 Custodian"      AS maintenance_resp,
+      H."26 Func Class"     AS functional_class,
+      H."31 Design Load"    AS design_load,
+      H."43 1 Mn Span Ty"   AS structure_type,
+      H."107 1 Deck Ty MSp" AS deck_type,
+      H."108 1 MSp WrSurf"  AS wearing_surface
+    FROM PRD_ADS_BRIDGE_INSP_HIST.BAL_ADS_BRIDGE_INSP_HIST.HIST_BRG_INSP_DATA H
+    WHERE TRIM(H."0000_StructureID") IN (
+        SELECT TRIM(CR."B.ID.01: BRG NUM")
+        FROM PRD_BRIDGE_INSP.BAL_BRIDGE_INSP.CORE_SNBI_DATA CR
+        JOIN PRD_BRIDGE_INSP.BAL_BRIDGE_INSP.FEATURES FEAT
+          ON  CR.AS_ID      = FEAT.AS_ID
+          AND FEAT."B.F.01" = 'H01'
+          AND FEAT."B.F.02" = 'C'
+    )
