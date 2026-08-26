@@ -130,6 +130,20 @@ def normalize_legacy_encodings(df, config=None, verbose=True):
         if col in df.columns:
             v = pd.to_numeric(df[col], errors="coerce")
             df[col] = v.where(v.abs() <= 10, v / 100.0)
+
+    # District codes arrive zero-padded from some sources and bare from others -- the live
+    # history table contains BOTH '1' and '01' for district 1. Two consequences, both quiet:
+    # grouping splits one district into two, and because txdot_district is a model feature the
+    # encoder (fitted on the bare form) treats '01' as a category it has never seen. Collapse
+    # numeric codes to their bare form; leave anything non-numeric alone.
+    dist_col = ((config or {}).get("grouping", {}) or {}).get("district_col", "txdot_district")
+    if dist_col in df.columns:
+        v = df[dist_col].astype(str).str.strip()
+        numeric = v.str.fullmatch(r"\d+").fillna(False)
+        out = v.mask(numeric, v.str.lstrip("0").replace("", "0"))
+        # astype(str) turns a missing district into the literal "None", which then survives
+        # dropna() and produces a "district None" report. Put the real nulls back.
+        df[dist_col] = out.where(df[dist_col].notna())
     return df
 
 

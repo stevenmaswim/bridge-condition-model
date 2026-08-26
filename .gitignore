@@ -44,3 +44,6 @@ sme_review/*
 
 # generated district reports (large, regenerate with build_district_reports.py)
 reports/
+
+# packaged report archives
+TxDOT_Bridge_Condition_Forecast_*.zip

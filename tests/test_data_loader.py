@@ -92,3 +92,21 @@ def test_normalize_tolerates_missing_columns_and_nulls():
     out = normalize_legacy_encodings(pd.DataFrame({"latitude": [None, 29153429.0]}), verbose=False)
     assert pd.isna(out["latitude"].iloc[0])
     assert round(out["latitude"].iloc[1], 4) == 29.2595
+
+
+def test_normalize_collapses_padded_district_codes():
+    """The live history table carries both '1' and '01' for district 1. Left alone that splits
+    one district into two reports, and because txdot_district is a model feature the encoder --
+    fitted on the bare form -- treats '01' as a category it has never seen. Non-numeric codes
+    and real nulls must survive untouched; a null turned into the string "None" would produce
+    a phantom "district None"."""
+    cfg = {"grouping": {"district_col": "txdot_district"}}
+    out = normalize_legacy_encodings(
+        pd.DataFrame({"txdot_district": ["01", "1", " 03 ", "12", "00", "A1", None]}),
+        cfg, verbose=False)["txdot_district"]
+    assert out.iloc[0] == out.iloc[1] == "1"
+    assert out.iloc[2] == "3"
+    assert out.iloc[3] == "12"
+    assert out.iloc[4] == "0"
+    assert out.iloc[5] == "A1"
+    assert pd.isna(out.iloc[6])

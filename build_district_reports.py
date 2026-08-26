@@ -18,6 +18,7 @@ import datetime as dt
 import html
 import os
 import re
+import zipfile
 
 import pandas as pd
 
@@ -171,6 +172,94 @@ def write_index(rows, meta, out_dir, watchlist):
     return path
 
 
+README = """BRIDGE CONDITION FORECAST - DISTRICT REPORTS
+Texas Department of Transportation
+Generated {generated}
+
+WHAT THIS IS
+------------
+A forecast of how each bridge's NBI condition ratings (0-9) are likely to change
+over the next 20 years, so deterioration can be priced into maintenance and
+capital budgets before a structure reaches poor condition.
+
+It is decision support for screening. It does not replace inspection.
+
+HOW TO OPEN IT
+--------------
+Unzip the folder, then double-click:
+
+    index.html
+
+That lists all {ndist} districts. Click a district to open its report. Everything
+works offline in any browser - no install, no network, no login.
+
+USING A DISTRICT REPORT
+-----------------------
+  1. Pick a bridge by its NBI number (type in the filter box to narrow the list).
+  2. Drag the horizon slider to the year you care about.
+  3. The table shows, for every component that bridge carries:
+       Current       the rating at its last inspection
+       Most-likely   the expected future rating
+       Plan-for      a deliberately conservative (25th percentile) figure for
+                     budgeting - it errs toward worse condition on purpose
+       Risk of poor  the chance that component reaches {thresh} or below
+  4. The panel on the right explains how that specific number was produced -
+     which model ran, what was fed into it, and what the model relies on.
+  5. Scroll down for the methodology and the accuracy measurements behind it.
+
+WHAT "WATCH-LIST" MEANS ON THE INDEX
+------------------------------------
+Bridges currently rated {lo}-{hi} whose conservative {horizon}-year forecast reaches
+{thresh} or below in at least one component. Bridges already rated below {lo} are
+inspection priorities rather than forecasting problems, and near-new bridges are
+simply aging normally, so both are excluded.
+
+IMPORTANT - DO NOT RANK DISTRICTS AGAINST EACH OTHER ON THAT NUMBER
+Across districts, the watch-list rate tracks how complete each district's
+attribute records are far more closely than how worn its bridges are (they
+correlate -0.96). Where physical attributes are missing, the model leans
+pessimistic. A district with patchy records will look worse than one with tidy
+records regardless of actual condition. Each card shows its attribute coverage
+for that reason. The number is meaningful WITHIN a district, not between them.
+
+DATA SOURCE
+-----------
+{source}
+{nbridge} bridges across {ndist} districts.
+
+WHAT THE MODEL CANNOT DO
+------------------------
+  - It cannot foresee sudden events such as scour or vehicle impact. Those are
+    events, not trends. Inspection remains the safety net.
+  - It is weakest on bridges already rated 0-4 and tends to over-predict their
+    recovery. It should not be used to justify deferring work on those.
+  - It treats rating increases from repair or rehabilitation as noise rather
+    than predicting them.
+  - Longer horizons rest on fewer historical examples than short ones.
+  - It has not yet been reviewed by a bridge engineer.
+
+Accuracy figures, the comparison against the two methods currently used in
+practice, and the known weaknesses are all in the "Methodology & validation"
+section at the bottom of every district report.
+"""
+
+
+def write_zip(rows, meta, out_dir, watchlist, zip_path):
+    """Package the folder plus a plain-text guide, ready to email."""
+    folder = "Bridge_Condition_Forecast"
+    readme = README.format(
+        generated=meta.get("generated", ""), source=meta.get("source_label", "—"),
+        nbridge=f"{sum(r['bridges'] for r in rows):,}", ndist=len(rows),
+        lo=watchlist.get("current_min", 5), hi=watchlist.get("current_max", 7),
+        horizon=watchlist.get("horizon_years", 10), thresh=watchlist.get("poor_threshold", 5.0))
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        z.writestr(f"{folder}/README.txt", readme)
+        z.write(os.path.join(out_dir, "index.html"), f"{folder}/index.html")
+        for r in rows:
+            z.write(os.path.join(out_dir, r["file"]), f"{folder}/{r['file']}")
+    return zip_path
+
+
 def main():
     ap = argparse.ArgumentParser(description="Build one forecast report per district.")
     ap.add_argument("--out-dir", default="reports",
@@ -181,6 +270,10 @@ def main():
                     help="Restrict to state-maintained (on-system) bridges")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--review-dir", default="sme_review")
+    ap.add_argument("--zip", dest="zip_path", nargs="?", const="auto", default=None,
+                    metavar="PATH",
+                    help="Also package the folder as a .zip ready to send (default name if "
+                         "no path given)")
     args = ap.parse_args()
 
     config = load_config(args.config)
@@ -188,6 +281,17 @@ def main():
     dist_col = config["grouping"]["district_col"]
     system_col = config.get("data", {}).get("system_col")
     os.makedirs(args.out_dir, exist_ok=True)
+
+    # Clear previously generated pages. Without this a rerun that produces different district
+    # keys leaves the old files sitting beside the new ones -- and since every page states its
+    # own source and date only in small print, a stale CSV-sourced district silently ships
+    # alongside fresh live ones. Only files this script writes are removed.
+    stale = [f for f in os.listdir(args.out_dir)
+             if f == "index.html" or re.fullmatch(r"district_[A-Za-z0-9_-]+\.html", f)]
+    for f in stale:
+        os.remove(os.path.join(args.out_dir, f))
+    if stale:
+        print(f"Cleared {len(stale)} previously generated file(s) from {args.out_dir}/")
 
     exhibits = load_validation_exhibits(args.review_dir)
     if not exhibits:
@@ -239,6 +343,12 @@ def main():
     print(f"\nWrote {len(rows)} district reports + index: {total:,} bridges, {disk:.1f} MB total")
     if skipped:
         print(f"Skipped (no forecastable bridges): {', '.join(map(str, skipped))}")
+    if args.zip_path:
+        name = (args.zip_path if args.zip_path != "auto"
+                else f"TxDOT_Bridge_Condition_Forecast_"
+                     f"{dt.datetime.now().strftime('%Y-%m-%d')}.zip")
+        write_zip(rows, meta, args.out_dir, watchlist, name)
+        print(f"Packaged {name} ({os.path.getsize(name)/1e6:.1f} MB) -- ready to send")
     print(f"Open {index}")
 
 
