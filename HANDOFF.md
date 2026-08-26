@@ -360,16 +360,24 @@ to move to a TxDOT-owned organization with team access. The code was written to 
 — credentials are env-var only, `.env` is git-ignored and confirmed untracked, data and models are
 excluded — but ownership by an individual is not a durable arrangement for a team asset.
 
-### Fixed on 25 August 2026 (commits `3079a47`, merge to `main`)
+### Fixed on 26 August 2026 (commit `3079a47`, merged to `main` in `517bd2d`)
 
 - **`.env.example` gave a Snowflake account that cannot connect** (`txdot-dm_bal_c.privatelink`).
   Corrected, with a comment explaining why the suffix must not be added.
 - **`requirements.txt` omitted `snowflake-connector-python[pandas]` and `python-dotenv`**, both
   required because `config.yaml` ships with `data.source: snowflake`. A fresh clone following the
   documented setup crashed on first run. Both added.
-- **Work was stranded on a feature branch.** `main` still pointed `config.yaml` at the old
-  Snowflake source, so anyone cloning and staying on `main` got a config aimed at the wrong table.
-  `feat/txdot-branded-forecast-report` is now fast-forward merged into `main`.
+- **Work was stranded on a feature branch.** PR #1 merged an older snapshot of
+  `feat/txdot-branded-forecast-report`, and `main` sat 13 commits behind it afterwards — still
+  carrying the `.privatelink` account, the missing Snowflake packages, and a `config.yaml` aimed
+  at the pre-highway-filter query. Anyone cloning `main` got that broken setup.
+
+  Merged in `517bd2d` (a merge commit, not a fast-forward: `main` carried PR #1's merge commit,
+  which was never on the branch). Local `main` had one unique commit, `edd8f4c`, a rebase
+  duplicate holding an older copy of the coordinate decoder — confirmed equivalent with
+  `git cherry` and confirmed superseded by diffing the two versions before it was discarded.
+  `main` and the branch are now identical; a cold clone of `main` was verified to receive the
+  working setup.
 
 ### Smaller items, worth fixing but not blocking
 
